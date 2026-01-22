@@ -203,7 +203,9 @@ class BaseTrainer():
                 if self.cfg.dist and self.dist_BN != '':
                     distribute_bn(self.net, self.world_size, self.dist_BN)
                 self.optim.sync_lookahead() if hasattr(self.optim, 'sync_lookahead') else None
-                if self.epoch >= self.cfg.trainer.test_start_epoch or self.epoch % self.cfg.trainer.test_per_epoch == 0:
+                if self.epoch == self.cfg.trainer.test_start_epoch:
+                    self.test()
+                elif self.epoch > self.cfg.trainer.test_start_epoch and self.epoch % self.cfg.trainer.test_per_epoch == 0:
                     self.test()
                 else:
                     self.test_ghost()
