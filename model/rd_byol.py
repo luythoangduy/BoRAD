@@ -15,7 +15,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 # Use relative import to avoid circular dependency
 from . import get_model, MODEL
-
+from functools import partial
 
 # ============================================================================
 # Predictor Layers (NEW - KEY component for BYOL)
