@@ -423,51 +423,72 @@ class RDLGC_BYOL(nn.Module):
                 module.train(mode)
         return self
 
+    def _add_noise(self, feats, noise_scale=0.1, device=None):
+        """
+        Add random noise to projected features to create a noisy view.
+        Each call generates independent noise, so two calls produce two different views.
+        
+        Args:
+            feats: list of feature maps [feat_a, feat_b, feat_c]
+            noise_scale: scale of the Gaussian noise
+            device: target device
+        Returns:
+            list of noised feature maps (new tensors, does not modify input)
+        """
+        noised = []
+        for f in feats:
+            noise = torch.randn_like(f) * noise_scale
+            B, C, H, W = f.shape
+            mask = torch.randint(0, 2, (B, 1, H, W), device=device or f.device).float()
+            noised.append(f + noise * mask)
+        return noised
+
     def train_forward(self, imgs, aug_imgs=None):
         """
         Forward pass during training (BYOL-style with momentum).
 
         Architecture:
-        - Online path: imgs → encoder → projector → predictor → q_grid
-        - Target path: imgs → encoder → momentum_projector → k_grid (NO predictor!)
+        - Online path: imgs → encoder → projector → +noise_1 → predictor → q_grid
+        - Target path: imgs → encoder → momentum_projector → +noise_2 → k_grid (NO predictor!)
 
         Key design choices:
         1. Both paths use SAME image (not augmented views)
-        2. Difference comes from momentum parameters (EMA updated)
-        3. Predictor asymmetry prevents collapse
-        4. aug_imgs parameter kept for compatibility but NOT used
+        2. After projection, DIFFERENT noise is added to each path to create 2 distinct views
+        3. Difference comes from: momentum parameters (EMA) + different noise
+        4. Predictor asymmetry prevents collapse
 
-        Why same image for both paths?
-        - Target should represent stable features of the SAME content
-        - Momentum network provides smooth, stable targets
-        - Augmentation diversity handled by data pipeline (if needed)
+        Why add noise after projection?
+        - Creates two different views from the same projected features
+        - Each view sees different spatial perturbations
+        - Encourages the model to learn noise-invariant representations
+        - Combined with momentum asymmetry for robust BYOL training
         """
         # === Extract features from encoder ===
-        feats_t = self.net_t(imgs)  # Online: original image
+        feats_t = self.net_t(imgs)
 
-        # === Online path: projector → predictor ===
+        # === Online path: projector ===
         feats_t_proj = self.proj_layer(feats_t)
-        feats_t_q_grid = self.predictor(feats_t_proj)  # With predictor (for BYOL loss)
 
         # === Target path: SAME image through momentum network ===
         with torch.no_grad():
-            feats_k = self.net_t(imgs)  # Target: SAME image, same frozen encoder
-            feats_t_k_grid = self.proj_layer_momentum(feats_k)  # Momentum projector (NO predictor!)
-            feats_t_k = [f.clone() for f in feats_k]  # Detach target backbone features
+            feats_k = self.net_t(imgs)
+            feats_t_k_grid = self.proj_layer_momentum(feats_k)
+            feats_t_k = [f.clone() for f in feats_k]
 
-        # === Optional: Add noise for regularization ===
-        # Add noise to projected features BEFORE passing to mff_oce
-        if self.training and torch.rand(1) > 0.5:
-            for i in range(len(feats_t_proj)):
-                noise = torch.randn_like(feats_t_proj[i]) * 0.1
-                B, C, H, W = feats_t_proj[i].shape
-                mask = torch.randint(0, 2, (B, 1, H, W), device=imgs.device).float()
-                feats_t_proj[i] = feats_t_proj[i] + noise * mask
+        # === Add DIFFERENT noise to each view after projection ===
+        # View 1 (online): projected features + noise_1
+        feats_t_proj_noised = self._add_noise(feats_t_proj, noise_scale=0.1, device=imgs.device)
+        # View 2 (target): momentum-projected features + noise_2 (independent)
+        with torch.no_grad():
+            feats_t_k_grid_noised = self._add_noise(feats_t_k_grid, noise_scale=0.1, device=imgs.device)
+
+        # === Predictor on noised online features (for BYOL loss) ===
+        feats_t_q_grid = self.predictor(feats_t_proj_noised)
 
         # === Feature fusion and decoding ===
-        # Use projected features (NOT predicted) for reconstruction
-        mid = self.mff_oce(feats_t_proj)
-        mid_k = self.mff_oce(feats_t_k_grid)
+        # Use noised projected features for reconstruction path
+        mid = self.mff_oce(feats_t_proj_noised)
+        mid_k = self.mff_oce(feats_t_k_grid_noised)
         feats_s = self.net_s(mid)
 
         # === Global features for SCL ===
@@ -478,9 +499,9 @@ class RDLGC_BYOL(nn.Module):
         # feats_t: Online backbone features (has gradient) - for cos loss and dense loss spatial matching
         # feats_s: Decoder output (has gradient) - for cos loss
         # feats_t_k: Target backbone features (detached) - for dense loss spatial matching
-        # feats_t_q_grid: Online predictor output (has gradient) - for dense loss
-        # feats_t_k_grid: Target projector output (detached) - for dense loss
-        return feats_t, feats_s, feats_t_k, feats_t_q_grid, feats_t_k_grid, glo_feats, glo_feats_k
+        # feats_t_q_grid: Online predictor output (has gradient, noised) - for dense loss
+        # feats_t_k_grid_noised: Target projector output (detached, noised) - for dense loss
+        return feats_t, feats_s, feats_t_k, feats_t_q_grid, feats_t_k_grid_noised, glo_feats, glo_feats_k
 
     def forward(self, imgs, aug_imgs=None):
         """Main forward pass"""
