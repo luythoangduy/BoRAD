@@ -3,8 +3,8 @@ from torch import optim as optim
 from timm.optim.adafactor import Adafactor
 from timm.optim.adahessian import Adahessian
 from timm.optim.adamp import AdamP
-from timm.optim.nadam import Nadam
-from timm.optim.radam import RAdam
+# from timm.optim.nadam import Nadam
+# from timm.optim.radam import RAdam
 from timm.optim.rmsprop_tf import RMSpropTF
 from timm.optim import SGDP
 from timm.optim.lookahead import Lookahead
@@ -60,8 +60,8 @@ def get_optim(optim_kwargs, net, lr, betas=None, filter_bias_and_bn=True):
 		'adamw': optim.AdamW,
 		'adadelta': optim.Adadelta,
 		'rmsprop': optim.RMSprop,
-		'Nadam': Nadam,
-		'radam': RAdam,
+		# 'Nadam': Nadam,
+		# 'radam': RAdam,
 		'adamp': AdamP,
 		'sgdp': SGDP,
 		'adafactor': Adafactor,
