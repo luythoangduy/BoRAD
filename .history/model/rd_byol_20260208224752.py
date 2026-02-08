@@ -98,7 +98,7 @@ class PredictorLayer(nn.Module):
         
         self.predictor = nn.Sequential(
             nn.Conv2d(in_c, hidden_c, kernel_size=1, bias=False),
-            PositionalNorm2d(hidden_c, affine=False),
+            PositionalScaleNorm2d(hidden_c, affine=False),
             nn.ReLU(inplace=True),
             nn.Conv2d(hidden_c, out_c, kernel_size=1, bias=False),
         )
@@ -144,7 +144,7 @@ class Bottleneck(nn.Module):
                  base_width=64, dilation=1, norm_layer=None):
         super(Bottleneck, self).__init__()
         if norm_layer is None:
-            norm_layer = PositionalNorm2d
+            norm_layer = PositionalScaleNorm2d
         width = int(planes * (base_width / 64.)) * groups
         self.conv1 = nn.Conv2d(inplanes, width, kernel_size=1, stride=1, bias=False)
         self.bn1 = norm_layer(width)
@@ -185,7 +185,7 @@ class MFF_OCE(nn.Module):
     def __init__(self, block, layers, width_per_group=64, norm_layer=None):
         super(MFF_OCE, self).__init__()
         if norm_layer is None:
-            norm_layer = PositionalNorm2d
+            norm_layer = PositionalScaleNorm2d
         self._norm_layer = norm_layer
         self.base_width = width_per_group
 
@@ -241,16 +241,16 @@ class ProjLayer(nn.Module):
         super(ProjLayer, self).__init__()
         self.proj = nn.Sequential(
             nn.Conv2d(in_c, in_c // 2, kernel_size=3, stride=1, padding=1),
-            PositionalNorm2d(in_c // 2),
+            PositionalScaleNorm2d(in_c // 2),
             nn.LeakyReLU(),
             nn.Conv2d(in_c // 2, in_c // 4, kernel_size=3, stride=1, padding=1),
-            PositionalNorm2d(in_c // 4),
+            PositionalScaleNorm2d(in_c // 4),
             nn.LeakyReLU(),
             nn.Conv2d(in_c // 4, in_c // 2, kernel_size=3, stride=1, padding=1),
-            PositionalNorm2d(in_c // 2, affine=False),
+            PositionalScaleNorm2d(in_c // 2, affine=False),
             nn.LeakyReLU(),
             nn.Conv2d(in_c // 2, out_c, kernel_size=3, stride=1, padding=1),
-            PositionalNorm2d(out_c),
+            PositionalScaleNorm2d(out_c),
             nn.LeakyReLU(),
         )
 
@@ -265,19 +265,19 @@ class SparseProjLayer(nn.Module):
         self.proj = nn.Sequential(
             nn.Conv2d(in_c, in_c, kernel_size=3, stride=1, padding=1, groups=in_c),
             nn.Conv2d(in_c, in_c // 2, kernel_size=1, stride=1),
-            PositionalNorm2d(in_c // 2),
+            PositionalScaleNorm2d(in_c // 2),
             nn.LeakyReLU(),
             nn.Conv2d(in_c // 2, in_c // 2, kernel_size=3, stride=1, padding=1, groups=in_c // 2),
             nn.Conv2d(in_c // 2, in_c // 4, kernel_size=1, stride=1),
-            PositionalNorm2d(in_c // 4),
+            PositionalScaleNorm2d(in_c // 4),
             nn.LeakyReLU(),
             nn.Conv2d(in_c // 4, in_c // 4, kernel_size=3, stride=1, padding=1, groups=in_c // 4),
             nn.Conv2d(in_c // 4, in_c // 2, kernel_size=1, stride=1),
-            PositionalNorm2d(in_c // 2, affine=False),
+            PositionalScaleNorm2d(in_c // 2),
             nn.LeakyReLU(),
             nn.Conv2d(in_c // 2, in_c // 2, kernel_size=3, stride=1, padding=1, groups=in_c // 2),
             nn.Conv2d(in_c // 2, out_c, kernel_size=1, stride=1),
-            PositionalNorm2d(out_c),
+            PositionalScaleNorm2d(out_c),
             nn.LeakyReLU(),
         )
 
@@ -339,7 +339,7 @@ class RDLGC_BYOL(nn.Module):
         self.net_t = get_model(model_t)
         
         # === Feature fusion ===
-        norm = PositionalNorm2d
+        norm = PositionalScaleNorm2d
         norm_layer = partial(norm, affine=False)
         self.mff_oce = MFF_OCE(Bottleneck, 3, norm_layer=norm_layer)
         
