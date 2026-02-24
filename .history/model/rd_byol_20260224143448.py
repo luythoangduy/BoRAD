@@ -230,16 +230,16 @@ class ProjLayer(nn.Module):
         super(ProjLayer, self).__init__()
         self.proj = nn.Sequential(
             nn.Conv2d(in_c, in_c // 2, kernel_size=3, stride=1, padding=1),
-            PositionalScaleNorm2d(in_c // 2, affine=False),
+            nn.InstanceNorm2d(in_c // 2),
             nn.LeakyReLU(),
             nn.Conv2d(in_c // 2, in_c // 4, kernel_size=3, stride=1, padding=1),
-            PositionalScaleNorm2d(in_c // 4, affine=False),
+            nn.InstanceNorm2d(in_c // 4),
             nn.LeakyReLU(),
             nn.Conv2d(in_c // 4, in_c // 2, kernel_size=3, stride=1, padding=1),
-            PositionalScaleNorm2d(in_c // 2, affine=False),
+            nn.InstanceNorm2d(in_c // 2),
             nn.LeakyReLU(),
             nn.Conv2d(in_c // 2, out_c, kernel_size=3, stride=1, padding=1),
-            PositionalScaleNorm2d(out_c, affine=False),
+            nn.InstanceNorm2d(out_c),
             nn.LeakyReLU(),
         )
 

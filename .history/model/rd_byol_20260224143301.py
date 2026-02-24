@@ -17,58 +17,6 @@ import torch.nn.functional as F
 from . import get_model, MODEL
 from functools import partial
 
-# POSITIONAL NORMALIZATION LAYERS
-class PositionalNorm2d(nn.Module):
-    """
-    Standard Positional Normalization (PONO).
-    Formula: y = (x - mean) / std
-    Output centered at 0, unit variance.
-    """
-    def __init__(self, num_features, affine=False, eps=1e-5):
-        super(PositionalNorm2d, self).__init__()
-        # LayerNorm applied on the last dimension (Channel)
-        self.norm = nn.LayerNorm(num_features, elementwise_affine=affine, eps=eps)
-
-    def forward(self, x):
-        # x: B, C, H, W -> B, H, W, C
-        x = x.permute(0, 2, 3, 1)
-        x = self.norm(x)
-        # -> B, C, H, W
-        x = x.permute(0, 3, 1, 2)
-        return x
-
-class PositionalScaleNorm2d(nn.Module):
-    """
-    Positional Normalization WITHOUT Mean Subtraction.
-    Formula: y = x / std
-    * Note: std is still calculated relative to the mean.
-    * Preserves the original offset (brightness) of the feature vector.
-    """
-    def __init__(self, num_features, affine=False, eps=1e-5):
-        super(PositionalScaleNorm2d, self).__init__()
-        self.num_features = num_features
-        self.affine = affine
-        self.eps = eps
-        if affine:
-            # Learnable scale (gamma) and bias (beta)
-            self.weight = nn.Parameter(torch.ones(1, num_features, 1, 1))
-            self.bias = nn.Parameter(torch.zeros(1, num_features, 1, 1))
-        else:
-            self.register_parameter('weight', None)
-            self.register_parameter('bias', None)
-
-    def forward(self, x):
-        # x: B, C, H, W
-        # 1. Tính Std (Standard Deviation) dọc theo chiều Channel (dim=1)
-        # unbiased=False để giống mặc định của LayerNorm/BatchNorm
-        std = torch.std(x, dim=1, unbiased=False, keepdim=True)
-        # 2. Chỉ chia cho Std (Scaling), KHÔNG trừ Mean
-        x_norm = x / (std + self.eps)
-        # 3. Affine transformation (nếu có)
-        if self.affine:
-            x_norm = x_norm * self.weight + self.bias
-        return x_norm
-
 # ============================================================================
 # Predictor Layers (NEW - KEY component for BYOL)
 # ============================================================================
@@ -230,16 +178,16 @@ class ProjLayer(nn.Module):
         super(ProjLayer, self).__init__()
         self.proj = nn.Sequential(
             nn.Conv2d(in_c, in_c // 2, kernel_size=3, stride=1, padding=1),
-            PositionalScaleNorm2d(in_c // 2, affine=False),
+            nn.InstanceNorm2d(in_c // 2),
             nn.LeakyReLU(),
             nn.Conv2d(in_c // 2, in_c // 4, kernel_size=3, stride=1, padding=1),
-            PositionalScaleNorm2d(in_c // 4, affine=False),
+            nn.InstanceNorm2d(in_c // 4),
             nn.LeakyReLU(),
             nn.Conv2d(in_c // 4, in_c // 2, kernel_size=3, stride=1, padding=1),
-            PositionalScaleNorm2d(in_c // 2, affine=False),
+            nn.InstanceNorm2d(in_c // 2),
             nn.LeakyReLU(),
             nn.Conv2d(in_c // 2, out_c, kernel_size=3, stride=1, padding=1),
-            PositionalScaleNorm2d(out_c, affine=False),
+            nn.InstanceNorm2d(out_c),
             nn.LeakyReLU(),
         )
 
