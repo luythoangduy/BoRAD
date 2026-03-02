@@ -149,7 +149,7 @@ class RDLGCBYOLTrainer(BaseTrainer):
 
     def backward_term(self, loss_term, optim):
         """Backward pass with gradient clipping"""
-        # optim.proj_opt.zero_grad()
+        optim.proj_opt.zero_grad()
         optim.distill_opt.zero_grad()
         
         if self.loss_scaler:
