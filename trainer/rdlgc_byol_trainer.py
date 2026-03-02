@@ -69,19 +69,6 @@ class RDLGCBYOLTrainer(BaseTrainer):
         # Handle both DDP and non-DDP cases
         net_module = self.net.module if hasattr(self.net, 'module') else self.net
 
-        # === Setup optimizers ===
-        # Create a module list containing proj_layer + predictor for optimizer
-        # proj_and_pred = torch.nn.ModuleList([net_module.proj_layer, net_module.predictor])
-        # self.optim.proj_opt = get_optim(cfg.optim.proj_opt.kwargs, proj_and_pred, lr=cfg.optim.lr)
-
-        # # Temporarily remove proj_layer and predictor for distill_opt
-        # proj_layer = net_module.proj_layer
-        # predictor = net_module.predictor
-        # net_module.proj_layer = None
-        # net_module.predictor = None
-        self.optim.distill_opt = get_optim(cfg.optim.distill_opt.kwargs, self.net, lr=cfg.optim.lr * 5)
-        # net_module.proj_layer = proj_layer
-        # net_module.predictor = predictor
 
         # === Set total steps for momentum scheduling ===
         total_steps = cfg.trainer.iter_full if hasattr(cfg.trainer, 'iter_full') else \
@@ -146,26 +133,6 @@ class RDLGCBYOLTrainer(BaseTrainer):
         (self.feats_t, self.feats_s, self.feats_t_k, 
          self.feats_t_q_grid, self.feats_t_k_grid, 
          self.glb_feats, self.glb_feats_k) = outputs
-
-    def backward_term(self, loss_term, optim):
-        """Backward pass with gradient clipping"""
-        # optim.proj_opt.zero_grad()
-        optim.distill_opt.zero_grad()
-        
-        if self.loss_scaler:
-            self.loss_scaler(
-                loss_term, optim, 
-                clip_grad=self.cfg.loss.clip_grad, 
-                parameters=self.net.parameters(),
-                create_graph=self.cfg.loss.create_graph
-            )
-        else:
-            loss_term.backward(retain_graph=self.cfg.loss.retain_graph)
-            if self.cfg.loss.clip_grad is not None:
-                dispatch_clip_grad(self.net.parameters(), value=self.cfg.loss.clip_grad)
-            
-            # optim.proj_opt.step()
-            optim.distill_opt.step()
 
     def optimize_parameters(self):
         """Optimization step with BYOL-style momentum update"""

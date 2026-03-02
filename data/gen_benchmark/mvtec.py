@@ -56,11 +56,11 @@ class MVTecSolver(object):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Generate MVTec benchmark metadata')
-    parser.add_argument('--root', type=str, default='data/mvtec3d',
+    parser.add_argument('--root', type=str, default='data/mvtec',
                         help='Path to MVTec dataset (default: data/mvtec3d)')
     parser.add_argument('--is2D', action='store_true',
                         help='Use 2D dataset instead of 3D (default: False)')
     args = parser.parse_args()
 
-    runner = MVTecSolver(root=args.root, is2D=args.is2D)
+    runner = MVTecSolver(root=args.root, is2D=True)
     runner.run()

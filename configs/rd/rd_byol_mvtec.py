@@ -115,8 +115,7 @@ class cfg(cfg_common, cfg_dataset_default, cfg_model_rd):
         self.optim.proj_opt = Namespace()
         self.optim.distill_opt = Namespace()
         self.optim.lr = self.lr
-        self.optim.proj_opt.kwargs = dict(name='adam', betas=(0.5, 0.999))
-        self.optim.distill_opt.kwargs = dict(name='adam', betas=(0.5, 0.999))
+        self.optim.kwargs = dict(name='adam', betas=(0.5, 0.999))
 
         # ==> trainer (BYOL trainer)
         self.trainer.name = 'RDLGCBYOLTrainer'  # Changed from 'RDLGCTrainer'
