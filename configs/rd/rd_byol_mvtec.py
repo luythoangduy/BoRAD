@@ -179,7 +179,7 @@ class cfg(cfg_common, cfg_dataset_default, cfg_model_rd):
         self.loss.loss_terms = [
             dict(type='CosLoss', name='cos', avg=False, lam=1.0),
             # Dense BYOL: local features with spatial matching
-            dict(type='BYOLDenseLoss', name='dense', lam=1.0, use_spatial_matching=True),
+            dict(type='BYOLDenseLoss', name='dense', lam=1.0, use_spatial_matching=False),
             # Prototype InfoNCE: global features with prototype learning
             dict(type='PrototypeInfoNCELoss', name='proto', lam=1.0, n_prototypes=5, temperature=0.07),
         ]

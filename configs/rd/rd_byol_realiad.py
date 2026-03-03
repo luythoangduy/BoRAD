@@ -114,7 +114,7 @@ class cfg(cfg_common, cfg_dataset_default, cfg_model_rd):
         # ==> loss
         self.loss.loss_terms = [
             dict(type='CosLoss', name='cos', avg=False, lam=1.0),
-            dict(type='BYOLDenseLoss', name='dense', lam=1.0, use_spatial_matching=True),
+            dict(type='BYOLDenseLoss', name='dense', lam=1.0, use_spatial_matching=False),
             dict(type='PrototypeInfoNCELoss', name='proto', lam=1.0, n_prototypes=5, temperature=0.07),
         ]
 

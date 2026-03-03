@@ -135,30 +135,38 @@ class RDLGCBYOLTrainer(BaseTrainer):
          self.glb_feats, self.glb_feats_k) = outputs
 
     def optimize_parameters(self):
-        """Optimization step with BYOL-style momentum update"""
+        """Optimization step with BYOL-style momentum update.
+        
+        Dynamically handles loss terms — only computes losses that exist
+        in self.loss_terms, enabling ablation configs to omit components.
+        """
         if self.mixup_fn is not None:
             self.imgs, _ = self.mixup_fn(self.imgs, torch.ones(self.imgs.shape[0], device=self.imgs.device))
         
         with self.amp_autocast():
             self.forward()
             
-            # === Reconstruction loss (cosine similarity) ===
+            # === Reconstruction loss (cosine similarity) — always required ===
             loss_cos = self.loss_terms['cos'](self.feats_t, self.feats_s)
+            loss = loss_cos
 
-            # === Prototype InfoNCE loss ===
-            loss_glb = self.loss_terms['proto'](self.glb_feats, self.glb_feats_k, self.labels)
+            # === Prototype InfoNCE loss (optional) ===
+            loss_glb = None
+            if 'proto' in self.loss_terms:
+                loss_glb = self.loss_terms['proto'](self.glb_feats, self.glb_feats_k, self.labels)
+                loss = loss + loss_glb
             
-            # === BYOL Dense loss (no negatives!) ===
-            # Note: q_grid has predictor output, k_grid doesn't
-            loss_den = self.loss_terms['dense'](
-                self.feats_t,           # q_b: online backbone for matching
-                self.feats_t_k,         # k_b: target backbone for matching  
-                self.feats_t_q_grid,    # q_grid: online output (with predictor)
-                self.feats_t_k_grid,    # k_grid: target output (no predictor)
-                self.labels
-            )
-            
-            loss = loss_cos + loss_glb + loss_den
+            # === BYOL Dense loss (optional) ===
+            loss_den = None
+            if 'dense' in self.loss_terms:
+                loss_den = self.loss_terms['dense'](
+                    self.feats_t,           # q_b: online backbone for matching
+                    self.feats_t_k,         # k_b: target backbone for matching  
+                    self.feats_t_q_grid,    # q_grid: online output (with predictor)
+                    self.feats_t_k_grid,    # k_grid: target output (no predictor)
+                    self.labels
+                )
+                loss = loss + loss_den
 
         self.backward_term(loss, self.optim)
 
@@ -167,34 +175,40 @@ class RDLGCBYOLTrainer(BaseTrainer):
         if hasattr(net_module, 'update_momentum_encoder'):
             net_module.update_momentum_encoder()
 
-        # === Logging ===
+        # === Logging (only log existing terms) ===
         loss_cos_val = reduce_tensor(loss_cos, self.world_size).clone().detach().item()
-        loss_glb_val = reduce_tensor(loss_glb, self.world_size).clone().detach().item()
-        loss_den_val = reduce_tensor(loss_den, self.world_size).clone().detach().item()
         loss_total_val = reduce_tensor(loss, self.world_size).clone().detach().item()
-
         update_log_term(self.log_terms.get('cos'), loss_cos_val, 1, self.master)
-        update_log_term(self.log_terms.get('proto'), loss_glb_val, 1, self.master)
-        update_log_term(self.log_terms.get('dense'), loss_den_val, 1, self.master)
+
+        loss_glb_val = 0.0
+        if loss_glb is not None:
+            loss_glb_val = reduce_tensor(loss_glb, self.world_size).clone().detach().item()
+            update_log_term(self.log_terms.get('proto'), loss_glb_val, 1, self.master)
+
+        loss_den_val = 0.0
+        if loss_den is not None:
+            loss_den_val = reduce_tensor(loss_den, self.world_size).clone().detach().item()
+            update_log_term(self.log_terms.get('dense'), loss_den_val, 1, self.master)
 
         # WandB logging
         if self.use_wandb and self.iter % self.cfg.wandb.log_interval == 0:
             log_dict = {
                 'train/loss_total': loss_total_val,
                 'train/loss_cos': loss_cos_val,
-                'train/loss_proto': loss_glb_val,
-                'train/loss_dense': loss_den_val,
                 'train/lr': self.optim.proj_opt.param_groups[0]['lr'],
                 'train/epoch': self.epoch,
                 'train/iter': self.iter,
             }
+            if loss_glb is not None:
+                log_dict['train/loss_proto'] = loss_glb_val
+            if loss_den is not None:
+                log_dict['train/loss_dense'] = loss_den_val
 
             # Log momentum
             current_momentum = net_module.get_current_momentum()
             if isinstance(current_momentum, torch.Tensor):
                 current_momentum = current_momentum.item()
             log_dict['train/momentum'] = current_momentum
-
 
             wandb.log(log_dict, step=self.iter)
 

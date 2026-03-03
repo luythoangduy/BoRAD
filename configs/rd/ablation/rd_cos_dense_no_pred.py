@@ -1,4 +1,4 @@
-"""Ablation: CosLoss + BYOLDenseLoss (no prototype)"""
+"""Ablation: CosLoss + BYOLDenseLoss, WITHOUT predictor"""
 from configs.rd.rd_byol_mvtec import cfg as base_cfg
 
 
@@ -6,6 +6,10 @@ class cfg(base_cfg):
     def __init__(self):
         super().__init__()
 
+        # Disable predictor
+        self.model.kwargs['use_predictor'] = False
+
+        # Only CosLoss + Dense (no prototype)
         self.loss.loss_terms = [
             dict(type='CosLoss', name='cos', avg=False, lam=1.0),
             dict(type='BYOLDenseLoss', name='dense', lam=1.0, use_spatial_matching=False),

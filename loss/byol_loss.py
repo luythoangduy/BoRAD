@@ -34,7 +34,7 @@ class BYOLDenseLoss(nn.Module):
         use_spatial_matching: Whether to use spatial correspondence matching
     """
     
-    def __init__(self, lam=1.0, use_spatial_matching=True):
+    def __init__(self, lam=1.0, use_spatial_matching=False):
         super(BYOLDenseLoss, self).__init__()
         self.lam = lam
         self.use_spatial_matching = use_spatial_matching
@@ -154,7 +154,7 @@ class ClassAwareBYOLDenseLoss(nn.Module):
         use_spatial_matching: Whether to use spatial correspondence matching
     """
     
-    def __init__(self, lam=1.0, use_spatial_matching=True):
+    def __init__(self, lam=1.0, use_spatial_matching=False):
         super(ClassAwareBYOLDenseLoss, self).__init__()
         self.lam = lam
         self.use_spatial_matching = use_spatial_matching

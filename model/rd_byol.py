@@ -258,18 +258,23 @@ class RDLGC_BYOL(nn.Module):
         model_t: Teacher/encoder model config
         model_s: Student/decoder model config  
         dp: Use depthwise separable projections
+        use_predictor: Whether to use BYOL predictor (default: True). 
+            Set False for ablation study.
         momentum: Momentum coefficient for target network update (default: 0.99)
         momentum_schedule: 'constant', 'cosine', 'linear' (default: 'cosine')
         momentum_start: Starting momentum for scheduled updates
         momentum_end: Ending momentum for scheduled updates
     """
     
-    def __init__(self, model_t, model_s, dp=False, 
+    def __init__(self, model_t, model_s, dp=False,
+                 use_predictor=True,
                  momentum=0.99,
                  momentum_schedule='cosine',
                  momentum_start=0.9,
                  momentum_end=0.999):
         super(RDLGC_BYOL, self).__init__()
+        
+        self.use_predictor = use_predictor
         
         # === Encoder (Teacher - frozen) ===
         self.net_t = get_model(model_t)
@@ -279,7 +284,7 @@ class RDLGC_BYOL(nn.Module):
         
         # === Online Network ===
         self.proj_layer = MultiProjectionLayer(base=64, dp=dp)
-        self.predictor = MultiPredictorLayer(base=64)  # KEY: Predictor creates asymmetry
+        self.predictor = MultiPredictorLayer(base=64) if use_predictor else None  # KEY: Predictor creates asymmetry
         
         # === Target Network (Momentum) ===
         self.proj_layer_momentum = MultiProjectionLayer(base=64, dp=dp)
@@ -381,7 +386,10 @@ class RDLGC_BYOL(nn.Module):
 
         # === Online path: projector → predictor ===
         feats_t_proj = self.proj_layer(feats_t)
-        feats_t_q_grid = self.predictor(feats_t_proj)  # With predictor (for BYOL loss)
+        if self.predictor is not None:
+            feats_t_q_grid = self.predictor(feats_t_proj)  # With predictor (for BYOL loss)
+        else:
+            feats_t_q_grid = feats_t_proj  # No predictor — identity path for ablation
 
         # === Target path: SAME image through momentum network ===
         with torch.no_grad():

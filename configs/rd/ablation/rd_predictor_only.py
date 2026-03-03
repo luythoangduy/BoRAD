@@ -1,4 +1,4 @@
-"""Ablation: CosLoss + BYOLDenseLoss (no prototype)"""
+"""Ablation: CosLoss + Predictor only (no dense, no proto)"""
 from configs.rd.rd_byol_mvtec import cfg as base_cfg
 
 
@@ -6,9 +6,9 @@ class cfg(base_cfg):
     def __init__(self):
         super().__init__()
 
+        # Predictor enabled (default), but only CosLoss
         self.loss.loss_terms = [
             dict(type='CosLoss', name='cos', avg=False, lam=1.0),
-            dict(type='BYOLDenseLoss', name='dense', lam=1.0, use_spatial_matching=False),
         ]
 
         self.logging.log_terms_train = [
@@ -17,5 +17,4 @@ class cfg(base_cfg):
             dict(name='optim_t', fmt=':>5.3f'),
             dict(name='lr', fmt=':>7.6f'),
             dict(name='cos', suffixes=[''], fmt=':>5.3f', add_name='avg'),
-            dict(name='dense', suffixes=[''], fmt=':>5.3f', add_name='avg'),
         ]

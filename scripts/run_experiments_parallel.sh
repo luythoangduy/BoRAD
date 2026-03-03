@@ -65,7 +65,7 @@ run_exp 0 "configs/rd/rd_byol_mvtec.py" "ablation_cos_only" \
     "loss.loss_terms=[dict(type='CosLoss',name='cos',avg=False,lam=1.0)] trainer.logdir_sub=ablation_cos_only" &
 
 run_exp 1 "configs/rd/rd_byol_mvtec.py" "ablation_cos_dense" \
-    "loss.loss_terms=[dict(type='CosLoss',name='cos',avg=False,lam=1.0),dict(type='BYOLDenseLoss',name='dense',lam=1.0,use_spatial_matching=True)] trainer.logdir_sub=ablation_cos_dense" &
+    "loss.loss_terms=[dict(type='CosLoss',name='cos',avg=False,lam=1.0),dict(type='BYOLDenseLoss',name='dense',lam=1.0,use_spatial_matching=False)] trainer.logdir_sub=ablation_cos_dense" &
 
 run_exp 2 "configs/rd/rd_byol_mvtec.py" "ablation_cos_proto" \
     "loss.loss_terms=[dict(type='CosLoss',name='cos',avg=False,lam=1.0),dict(type='PrototypeInfoNCELoss',name='proto',lam=1.0,n_prototypes=5,temperature=0.07)] trainer.logdir_sub=ablation_cos_proto" &
@@ -87,7 +87,7 @@ echo "=============================================="
 gpu_idx=0
 for N_PROTO in 3 5 7 10; do
     run_exp $gpu_idx "configs/rd/rd_byol_mvtec.py" "nproto_$N_PROTO" \
-        "loss.loss_terms=[dict(type='CosLoss',name='cos',avg=False,lam=1.0),dict(type='BYOLDenseLoss',name='dense',lam=1.0,use_spatial_matching=True),dict(type='PrototypeInfoNCELoss',name='proto',lam=1.0,n_prototypes=$N_PROTO,temperature=0.07)] trainer.logdir_sub=nproto_$N_PROTO" &
+        "loss.loss_terms=[dict(type='CosLoss',name='cos',avg=False,lam=1.0),dict(type='BYOLDenseLoss',name='dense',lam=1.0,use_spatial_matching=False),dict(type='PrototypeInfoNCELoss',name='proto',lam=1.0,n_prototypes=$N_PROTO,temperature=0.07)] trainer.logdir_sub=nproto_$N_PROTO" &
     gpu_idx=$((($gpu_idx + 1) % $NUM_GPUS))
 done
 
@@ -105,7 +105,7 @@ echo "=============================================="
 gpu_idx=0
 for TEMP in 0.03 0.05 0.07 0.1; do
     run_exp $gpu_idx "configs/rd/rd_byol_mvtec.py" "temp_$TEMP" \
-        "loss.loss_terms=[dict(type='CosLoss',name='cos',avg=False,lam=1.0),dict(type='BYOLDenseLoss',name='dense',lam=1.0,use_spatial_matching=True),dict(type='PrototypeInfoNCELoss',name='proto',lam=1.0,n_prototypes=5,temperature=$TEMP)] trainer.logdir_sub=temp_$TEMP" &
+        "loss.loss_terms=[dict(type='CosLoss',name='cos',avg=False,lam=1.0),dict(type='BYOLDenseLoss',name='dense',lam=1.0,use_spatial_matching=False),dict(type='PrototypeInfoNCELoss',name='proto',lam=1.0,n_prototypes=5,temperature=$TEMP)] trainer.logdir_sub=temp_$TEMP" &
     gpu_idx=$((($gpu_idx + 1) % $NUM_GPUS))
 done
 

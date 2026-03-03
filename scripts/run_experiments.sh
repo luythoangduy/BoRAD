@@ -122,7 +122,7 @@ for N_PROTO in 3 5 7 10 15; do
         -c configs/rd/rd_byol_mvtec.py \
         -m train \
         seed=$SEED \
-        "loss.loss_terms=[dict(type='CosLoss', name='cos', avg=False, lam=1.0), dict(type='BYOLDenseLoss', name='dense', lam=1.0, use_spatial_matching=True), dict(type='PrototypeInfoNCELoss', name='proto', lam=1.0, n_prototypes=$N_PROTO, temperature=0.07)]" \
+        "loss.loss_terms=[dict(type='CosLoss', name='cos', avg=False, lam=1.0), dict(type='BYOLDenseLoss', name='dense', lam=1.0, use_spatial_matching=False), dict(type='PrototypeInfoNCELoss', name='proto', lam=1.0, n_prototypes=$N_PROTO, temperature=0.07)]" \
         trainer.logdir_sub="sensitivity_nproto_$N_PROTO" \
         2>&1 | tee "$LOG_DIR/sensitivity_nproto_$N_PROTO.log"
 done
@@ -143,7 +143,7 @@ for TEMP in 0.03 0.05 0.07 0.1 0.2; do
         -c configs/rd/rd_byol_mvtec.py \
         -m train \
         seed=$SEED \
-        "loss.loss_terms=[dict(type='CosLoss', name='cos', avg=False, lam=1.0), dict(type='BYOLDenseLoss', name='dense', lam=1.0, use_spatial_matching=True), dict(type='PrototypeInfoNCELoss', name='proto', lam=1.0, n_prototypes=5, temperature=$TEMP)]" \
+        "loss.loss_terms=[dict(type='CosLoss', name='cos', avg=False, lam=1.0), dict(type='BYOLDenseLoss', name='dense', lam=1.0, use_spatial_matching=False), dict(type='PrototypeInfoNCELoss', name='proto', lam=1.0, n_prototypes=5, temperature=$TEMP)]" \
         trainer.logdir_sub="sensitivity_temp_$TEMP" \
         2>&1 | tee "$LOG_DIR/sensitivity_temp_$TEMP.log"
 done
@@ -165,7 +165,7 @@ for LAM_DENSE in 0.5 1.0 2.0; do
             -c configs/rd/rd_byol_mvtec.py \
             -m train \
             seed=$SEED \
-            "loss.loss_terms=[dict(type='CosLoss', name='cos', avg=False, lam=1.0), dict(type='BYOLDenseLoss', name='dense', lam=$LAM_DENSE, use_spatial_matching=True), dict(type='PrototypeInfoNCELoss', name='proto', lam=$LAM_PROTO, n_prototypes=5, temperature=0.07)]" \
+            "loss.loss_terms=[dict(type='CosLoss', name='cos', avg=False, lam=1.0), dict(type='BYOLDenseLoss', name='dense', lam=$LAM_DENSE, use_spatial_matching=False), dict(type='PrototypeInfoNCELoss', name='proto', lam=$LAM_PROTO, n_prototypes=5, temperature=0.07)]" \
             trainer.logdir_sub="sensitivity_lam_d${LAM_DENSE}_p${LAM_PROTO}" \
             2>&1 | tee "$LOG_DIR/sensitivity_lam_d${LAM_DENSE}_p${LAM_PROTO}.log"
     done
