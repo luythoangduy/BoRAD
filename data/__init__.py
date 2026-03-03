@@ -3,6 +3,7 @@ import importlib
 import torch
 from torch.utils.data.distributed import DistributedSampler
 import numpy as np
+import random
 
 from util.registry import Registry
 from timm.data.distributed_sampler import RepeatAugSampler
@@ -24,7 +25,13 @@ def get_dataset(cfg):
 	test_set = DATA.get_module(cfg.data.type)(cfg, train=False, transform=test_transforms, target_transform=target_transforms)
 	return train_set, test_set
 
+def seed_worker(worker_id):
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
 
+g = torch.Generator()
+g.manual_seed(0)
 def get_loader(cfg):
 	train_set, test_set = get_dataset(cfg)
 	if cfg.dist:
@@ -48,7 +55,9 @@ def get_loader(cfg):
 											   num_workers=cfg.trainer.data.num_workers_per_gpu,
 											   pin_memory=cfg.trainer.data.pin_memory,
 											   drop_last=cfg.trainer.data.drop_last,
-											   persistent_workers=cfg.trainer.data.persistent_workers)
+											   persistent_workers=cfg.trainer.data.persistent_workers,
+											   worker_init_fn=seed_worker,
+											   generator=g)
 	test_loader = torch.utils.data.DataLoader(dataset=test_set,
 											  batch_size=cfg.trainer.data.batch_size_per_gpu_test,
 											  shuffle=False,
@@ -56,5 +65,7 @@ def get_loader(cfg):
 											  num_workers=cfg.trainer.data.num_workers_per_gpu,
 											  pin_memory=cfg.trainer.data.pin_memory,
 											  drop_last=False,
-											  persistent_workers=cfg.trainer.data.persistent_workers)
+											  persistent_workers=cfg.trainer.data.persistent_workers,
+											  worker_init_fn=seed_worker,
+											  generator=g)
 	return train_loader, test_loader

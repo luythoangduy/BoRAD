@@ -38,7 +38,7 @@ class cfg_common(Namespace):
 		self.trainer.checkpoint = 'runs'
 		self.trainer.logdir_sub = ''
 		self.trainer.resume_dir = ''
-		self.trainer.cuda_deterministic = False
+		self.trainer.cuda_deterministic = True
 		self.trainer.epoch_full = self.epoch_full
 		self.trainer.scheduler_kwargs = dict(
 			name='step', lr_noise=None, noise_pct=0.67, noise_std=1.0, noise_seed=42, lr_min=0.005 / 1e2,
