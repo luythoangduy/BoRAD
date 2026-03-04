@@ -19,7 +19,44 @@ from . import get_model, MODEL
 # ============================================================================
 # Predictor Layers (NEW - KEY component for BYOL)
 # ============================================================================
+class PositionalNorm2d(nn.Module):
+    """
+    Positional Normalization (PONO): Chuẩn hóa feature theo chiều Channels 
+    tại mỗi vị trí pixel (h, w) riêng biệt.
+    
+    Điều này giúp nhiễu tại pixel này KHÔNG ảnh hưởng đến thống kê của pixel khác.
+    """
+    def __init__(self, num_features, affine=False, eps=1e-5):
+        super(PositionalNorm2d, self).__init__()
+        self.num_features = num_features
+        self.affine = affine
+        self.eps = eps
+        
+        if self.affine:
+            # Tham số learnable (gamma, beta) có kích thước (1, C, 1, 1) 
+            # để scale lại từng channel sau khi norm
+            self.weight = nn.Parameter(torch.ones(1, num_features, 1, 1))
+            self.bias = nn.Parameter(torch.zeros(1, num_features, 1, 1))
+        else:
+            self.register_parameter('weight', None)
+            self.register_parameter('bias', None)
 
+    def forward(self, x):
+        # x shape: (N, C, H, W)
+        
+        # 1. Tính Mean và Var dọc theo chiều Channels (dim=1)
+        # Kết quả sẽ có shape (N, 1, H, W) -> Thống kê riêng cho từng pixel
+        mean = x.mean(dim=1, keepdim=True)
+        var = x.var(dim=1, keepdim=True, unbiased=False)
+        
+        # 2. Chuẩn hóa
+        x_norm = (x-mean) / torch.sqrt(var + self.eps)
+        
+        # 3. Scale và Shift (nếu dùng affine)
+        if self.affine:
+            x_norm = x_norm * self.weight + self.bias
+            
+        return x_norm
 class PredictorLayer(nn.Module):
     """
     BYOL-style predictor: creates asymmetry between online and target networks.
@@ -34,7 +71,7 @@ class PredictorLayer(nn.Module):
         
         self.predictor = nn.Sequential(
             nn.Conv2d(in_c, hidden_c, kernel_size=1, bias=False),
-            nn.BatchNorm2d(hidden_c),
+            PositionalNorm2d(hidden_c),
             nn.ReLU(inplace=True),
             nn.Conv2d(hidden_c, out_c, kernel_size=1, bias=False),
         )
