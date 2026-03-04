@@ -71,9 +71,11 @@ class PredictorLayer(nn.Module):
         
         self.predictor = nn.Sequential(
             nn.Conv2d(in_c, hidden_c, kernel_size=1, bias=False),
-            PositionalNorm2d(hidden_c),
-            nn.ReLU(inplace=True),
+            nn.InstanceNorm2d(hidden_c),
+            nn.LeakyReLU(),
             nn.Conv2d(hidden_c, out_c, kernel_size=1, bias=False),
+            nn.InstanceNorm2d(out_c),
+            nn.LeakyReLU(),
         )
     
     def forward(self, x):

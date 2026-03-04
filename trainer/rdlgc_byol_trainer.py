@@ -72,7 +72,7 @@ class RDLGCBYOLTrainer(BaseTrainer):
                 # === Setup optimizers ===
         # Create a module list containing proj_layer + predictor for optimizer
         # proj_and_pred = torch.nn.ModuleList([net_module.proj_layer, net_module.predictor])
-        self.optim.proj_opt = get_optim(cfg.optim.proj_opt.kwargs, net_module.predictor, lr=cfg.optim.lr)
+        self.optim.proj_opt = get_optim(cfg.optim.proj_opt.kwargs, net_module.predictor, lr=cfg.optim.lr*5)
 
         # # Temporarily remove proj_layer and predictor for distill_opt
         # proj_layer = net_module.proj_layer
