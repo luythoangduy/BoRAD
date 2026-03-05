@@ -35,9 +35,11 @@ class cfg(cfg_common, cfg_dataset_default, cfg_model_rd):
         self.lr = 0.005 * self.batch_train / 16
         self.weight_decay = 0.05
         self.metrics = [
-            'mAUROC_sp_max',
+            'mAUROC_sp_max', 'mAP_sp_max', 'mF1_max_sp_max',
             'mAUPRO_px',
-            'mAUROC_px'
+            'mAUROC_px', 'mAP_px', 'mF1_max_px',
+            'mF1_px_0.2_0.8_0.1', 'mAcc_px_0.2_0.8_0.1', 'mIoU_px_0.2_0.8_0.1',
+            'mIoU_max_px',
         ]
         self.use_adeval = True
         self.lambda_1 = 1
@@ -102,7 +104,7 @@ class cfg(cfg_common, cfg_dataset_default, cfg_model_rd):
             dp=False,
             # BYOL momentum settings
             momentum=0.99,  # Final momentum value
-            momentum_schedule='consine',  # 'constant', 'cosine', or 'linear'
+            momentum_schedule='linear',  # 'constant', 'cosine', or 'linear'
             momentum_start=0.99,  # Starting momentum (for scheduled updates)
             momentum_end=0.999   # Ending momentum (for scheduled updates)
         )
