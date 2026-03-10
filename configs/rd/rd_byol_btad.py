@@ -24,7 +24,7 @@ class cfg(cfg_common, cfg_dataset_default, cfg_model_rd):
         self.test_per_epoch = self.epoch_full // 10
         self.batch_train = 16
         self.batch_test_per = 16
-        self.lr = 0.001 * self.batch_train / 16
+        self.lr = 0.005 * self.batch_train / 16
         self.weight_decay = 0.05
         self.metrics = ['mAUROC_sp_max', 'mAP_sp_max', 'mF1_max_sp_max', 'mAUPRO_px', 'mAUROC_px', 'mAP_px', 'mF1_max_px', 'mF1_px_0.2_0.8_0.1', 'mAcc_px_0.2_0.8_0.1', 'mIoU_px_0.2_0.8_0.1', 'mIoU_max_px']
         self.use_adeval = True
@@ -114,8 +114,8 @@ class cfg(cfg_common, cfg_dataset_default, cfg_model_rd):
         # ==> loss
         self.loss.loss_terms = [
             dict(type='CosLoss', name='cos', avg=False, lam=1.0),
-            dict(type='BYOLDenseLoss', name='dense', lam=1.0, use_spatial_matching=False),
-            dict(type='PrototypeInfoNCELoss', name='proto', lam=1.0, n_prototypes=5, temperature=0.07),
+            dict(type='BYOLDenseLoss', name='dense', lam=2.0, use_spatial_matching=False),
+            dict(type='PrototypeInfoNCELoss', name='proto', lam=1.0, n_prototypes=10, temperature=0.07),
         ]
 
         # ==> logging

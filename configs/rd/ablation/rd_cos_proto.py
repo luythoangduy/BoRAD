@@ -8,7 +8,7 @@ class cfg(base_cfg):
 
         self.loss.loss_terms = [
             dict(type='CosLoss', name='cos', avg=False, lam=1.0),
-            dict(type='PrototypeInfoNCELoss', name='proto', lam=1.0, n_prototypes=5, temperature=0.07),
+            dict(type='PrototypeInfoNCELoss', name='proto', lam=1.0, n_prototypes=10, temperature=0.07),
         ]
 
         self.logging.log_terms_train = [

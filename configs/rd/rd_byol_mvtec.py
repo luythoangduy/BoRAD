@@ -183,13 +183,11 @@ class cfg(cfg_common, cfg_dataset_default, cfg_model_rd):
         self.loss.loss_terms = [
             dict(type='CosLoss', name='cos', avg=False, lam=1.0),
             # Dense BYOL: local features with spatial matching
-            dict(type='BYOLDenseLoss', name='dense', lam=1.0, use_spatial_matching=False),
+            dict(type='BYOLDenseLoss', name='dense', lam=2.0, use_spatial_matching=False),
             # Prototype InfoNCE: global features with prototype learning
-            dict(type='PrototypeInfoNCELoss', name='proto', lam=1.0, n_prototypes=5, temperature=0.07),
+            dict(type='PrototypeInfoNCELoss', name='proto', lam=1.0, n_prototypes=10, temperature=0.07),
         ]
 
-        # Note: ClassAwareBYOLDenseLoss doesn't work well with small batch_size
-        # because many classes have only 1 sample, causing spatial matching to fail
 
         # ==> logging
         self.logging.log_terms_train = [
