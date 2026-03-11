@@ -252,13 +252,11 @@ class PrototypeBYOLLoss(nn.Module):
     """
     Prototype-guided BYOL loss for global features.
 
-    Flow:
-    Online: glo_feats → query_prototypes → linear_merge → predictor → predicted
-    Target: glo_feats_k → query_prototypes (no_grad) → linear_merge (no_grad) → target (NO predictor!)
-    Loss:   2 - 2 * cos_sim(predicted, stop_gradient(target))
+    For each prototype p_i, shift origin to p_i:
+        shifted_i = feature - p_i
 
-    Prototypes are initialized as orthogonal vectors and MUST be added to optimizer.
-    Asymmetry from predictor (online only) prevents collapse — same principle as dense BYOL loss.
+    Then compute BYOL loss per prototype and average:
+        loss = mean_over_prototypes(2 - 2 * cos_sim(predictor(shifted_online_i), shifted_target_i))
 
     Args:
         lam: Loss weight multiplier
@@ -277,76 +275,65 @@ class PrototypeBYOLLoss(nn.Module):
             generate_orthonormal_vectors(n_prototypes, feat_dim)
         )
 
-        # === Linear merge: concat(features, weighted_features) → feat_dim ===
-        self.linear_merge = nn.Sequential(
-            nn.Linear(feat_dim * 2, feat_dim),
-            nn.InstanceNorm1d(feat_dim),
-            nn.LeakyReLU(inplace=True),
-        )
-
         # === Predictor head (online only — creates asymmetry for BYOL) ===
+        # Operates per-prototype: input (B*N, C) → output (B*N, C)
         self.predictor = nn.Sequential(
-            nn.Linear(feat_dim, feat_dim // 4),
-            nn.InstanceNorm1d(feat_dim // 4),
+            nn.Linear(feat_dim, feat_dim),
+            nn.InstanceNorm1d(feat_dim),
             nn.LeakyReLU(inplace=True),
-            nn.Linear(feat_dim // 4, feat_dim),
+            nn.Linear(feat_dim, feat_dim),
             nn.InstanceNorm1d(feat_dim),
             nn.LeakyReLU(inplace=True),
         )
 
-    def query_prototypes(self, features):
+    def shift_to_prototypes(self, features):
         """
-        Query prototypes with features and create enhanced features.
+        Shift coordinate origin to each prototype.
 
         Args:
             features: (B, C) global features
 
         Returns:
-            merged: (B, C) merged features after linear projection
+            shifted: (B, N, C) — features shifted to each prototype's coordinate system
+                     shifted[:, i, :] = features - prototype_i
         """
-        # Normalize features and prototypes
-        features_norm = F.normalize(features, dim=1, p=2)  # (B, C)
-        prototypes_norm = F.normalize(self.prototypes, dim=1, p=2)  # (n_proto, C)
+        prototypes_norm = F.normalize(self.prototypes, dim=1, p=2)  # (N, C)
 
-        # Compute cosine similarity with all prototypes
-        cosine_sim = torch.matmul(features_norm, prototypes_norm.T)  # (B, n_proto)
+        # features: (B, C) → (B, 1, C)
+        # prototypes: (N, C) → (1, N, C)
+        # shifted: (B, N, C) — feature_b shifted to prototype_n's origin
+        shifted = features.unsqueeze(1) - prototypes_norm.unsqueeze(0)  # (B, N, C)
 
-        # Soft attention: weighted combination of prototypes
-        attn_weights = F.softmax(cosine_sim, dim=1)  # (B, n_proto)
-        proto_features = torch.matmul(attn_weights, self.prototypes)  # (B, C)
-
-        # Concatenate: [original_features, prototype_features]
-        concat_features = torch.cat([features, proto_features], dim=1)  # (B, 2*C)
-
-        # Linear merge: 2*C → C
-        merged = self.linear_merge(concat_features)  # (B, C)
-
-        return merged
+        return shifted
 
     def forward(self, glo_feats, glo_feats_k, labels=None):
         """
-        Compute Prototype BYOL loss.
+        Compute per-prototype BYOL loss.
 
-        Args:
-            glo_feats: Online global features (B, C) — has gradient
-            glo_feats_k: Target global features (B, C) — detached (from momentum path)
-            labels: Class labels (optional, not used)
-
-        Returns:
-            loss: BYOL-style prototype loss
+        For each prototype i:
+            online_shifted_i = glo_feats - prototype_i
+            target_shifted_i = glo_feats_k - prototype_i
+            loss_i = 2 - 2 * cos_sim(predictor(online_shifted_i), target_shifted_i)
+        Total loss = mean(loss_i)
         """
-        # === Online path: query_prototypes → linear_merge → predictor ===
-        merged_q = self.query_prototypes(glo_feats)
-        predicted = self.predictor(merged_q)  # Only online goes through predictor
+        B = glo_feats.shape[0]
+        N = self.n_prototypes
 
-        # === Target path: query_prototypes → linear_merge (NO predictor!) ===
+        # === Shift to each prototype's coordinate system ===
+        shifted_q = self.shift_to_prototypes(glo_feats)      # (B, N, C)
         with torch.no_grad():
-            merged_k = self.query_prototypes(glo_feats_k)
+            shifted_k = self.shift_to_prototypes(glo_feats_k)  # (B, N, C)
 
-        # === BYOL loss: positive pairs only ===
-        predicted = F.normalize(predicted, dim=1, p=2)
-        target = F.normalize(merged_k, dim=1, p=2)
+        # === Online path: predictor (reshape to (B*N, C) for Linear layers) ===
+        predicted = self.predictor(shifted_q.reshape(B * N, -1))  # (B*N, C)
+        predicted = predicted.reshape(B, N, -1)                    # (B, N, C)
 
-        loss = 2 - 2 * (predicted * target).sum(dim=1).mean()
+        # === BYOL loss per prototype, then average ===
+        predicted = F.normalize(predicted, dim=2, p=2)   # normalize along C
+        target = F.normalize(shifted_k, dim=2, p=2)      # normalize along C
+
+        # cos_sim per (batch, prototype) → mean over both
+        per_proto_loss = 2 - 2 * (predicted * target).sum(dim=2)  # (B, N)
+        loss = per_proto_loss.mean()  # average over batch and prototypes
 
         return loss * self.lam

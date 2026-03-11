@@ -279,12 +279,36 @@ class RDLGCBYOLTrainer(BaseTrainer):
 
             wandb.log(log_dict, step=self.iter)
 
-        # Log momentum value periodically
+        # Log momentum and proto diagnostics periodically
         if self.iter % 100 == 0 and self.master:
             current_momentum = net_module.get_current_momentum()
             if isinstance(current_momentum, torch.Tensor):
                 current_momentum = current_momentum.item()
             log_msg(self.logger, f"[BYOL] Step {self.iter}, Momentum: {current_momentum:.4f}")
+
+            # === Proto diagnostics: inter-prototype similarity ===
+            if 'proto' in self.loss_terms and hasattr(self.loss_terms['proto'], 'prototypes'):
+                with torch.no_grad():
+                    protos = self.loss_terms['proto'].prototypes  # (N, C)
+                    protos_norm = F.normalize(protos, dim=1, p=2)
+                    sim_matrix = torch.matmul(protos_norm, protos_norm.T)  # (N, N)
+                    # Mask diagonal (self-similarity = 1.0)
+                    N = sim_matrix.shape[0]
+                    mask = ~torch.eye(N, dtype=torch.bool, device=sim_matrix.device)
+                    mean_sim = sim_matrix[mask].mean().item()
+                    max_sim = sim_matrix[mask].max().item()
+
+                frozen_str = " [FROZEN]" if self.proto_frozen else ""
+                log_msg(self.logger,
+                    f"[Proto]{frozen_str} loss={loss_glb_val:.4f}, "
+                    f"inter_proto_sim: mean={mean_sim:.4f}, max={max_sim:.4f}")
+
+                if self.use_wandb:
+                    wandb.log({
+                        'proto/inter_sim_mean': mean_sim,
+                        'proto/inter_sim_max': max_sim,
+                        'proto/frozen': int(self.proto_frozen),
+                    }, step=self.iter)
 
     @torch.no_grad()
     def test(self):
