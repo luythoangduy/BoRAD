@@ -1,4 +1,4 @@
-"""Ablation: CosLoss + PrototypeInfoNCELoss (no dense)"""
+"""Ablation: CosLoss + PrototypeBYOLLoss (no dense)"""
 from configs.rd.rd_byol_mvtec import cfg as base_cfg
 
 
@@ -8,7 +8,7 @@ class cfg(base_cfg):
 
         self.loss.loss_terms = [
             dict(type='CosLoss', name='cos', avg=False, lam=1.0),
-            dict(type='PrototypeInfoNCELoss', name='proto', lam=1.0, n_prototypes=10, temperature=0.07),
+            dict(type='PrototypeBYOLLoss', name='proto', lam=1.0, n_prototypes=10, feat_dim=2048),
         ]
 
         self.logging.log_terms_train = [

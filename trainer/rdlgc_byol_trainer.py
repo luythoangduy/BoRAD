@@ -69,19 +69,27 @@ class RDLGCBYOLTrainer(BaseTrainer):
         # Handle both DDP and non-DDP cases
         net_module = self.net.module if hasattr(self.net, 'module') else self.net
 
-                # === Setup optimizers ===
-        # Create a module list containing proj_layer + predictor for optimizer
-        # proj_and_pred = torch.nn.ModuleList([net_module.proj_layer, net_module.predictor])
+        # === Setup optimizers ===
         self.optim.proj_opt = get_optim(cfg.optim.proj_opt.kwargs, net_module.predictor, lr=cfg.optim.lr)
 
-        # # Temporarily remove proj_layer and predictor for distill_opt
-        # proj_layer = net_module.proj_layer
+        # Temporarily remove predictor for distill_opt (avoid duplicate params)
         predictor = net_module.predictor
-        # net_module.proj_layer = None
         net_module.predictor = None
         self.optim.distill_opt = get_optim(cfg.optim.distill_opt.kwargs, self.net, lr=cfg.optim.lr)
-        # net_module.proj_layer = proj_layer
         net_module.predictor = predictor
+
+        # === Proto loss optimizer: prototypes + linear_merge + predictor ===
+        if 'proto' in self.loss_terms:
+            proto_module = self.loss_terms['proto']
+            self.optim.proto_opt = torch.optim.Adam(
+                proto_module.parameters(), lr=cfg.optim.lr, betas=(0.5, 0.999)
+            )
+            proto_module.train()  # IMPORTANT: get_loss_terms sets .eval(), but BN needs .train()
+            if self.master:
+                n_params = sum(p.numel() for p in proto_module.parameters() if p.requires_grad)
+                log_msg(self.logger, f"[Proto] Added {n_params} params to proto_opt")
+        else:
+            self.optim.proto_opt = None
 
         # === Set total steps for momentum scheduling ===
         total_steps = cfg.trainer.iter_full if hasattr(cfg.trainer, 'iter_full') else \
@@ -150,6 +158,8 @@ class RDLGCBYOLTrainer(BaseTrainer):
         """Backward pass with gradient clipping"""
         optim.proj_opt.zero_grad()
         optim.distill_opt.zero_grad()
+        if optim.proto_opt is not None:
+            optim.proto_opt.zero_grad()
         
         if self.loss_scaler:
             self.loss_scaler(
@@ -165,6 +175,8 @@ class RDLGCBYOLTrainer(BaseTrainer):
             
             optim.proj_opt.step()
             optim.distill_opt.step()
+            if optim.proto_opt is not None:
+                optim.proto_opt.step()
 
 
     def optimize_parameters(self):
@@ -261,6 +273,7 @@ class RDLGCBYOLTrainer(BaseTrainer):
             os.makedirs(self.tmp_dir, exist_ok=True)
 
         self.reset(isTrain=False)
+        imgs_masks, anomaly_maps, cls_names, anomalys = [], [], [], []
         batch_idx = 0
         test_length = self.cfg.data.test_size
         test_loader = iter(self.test_loader)
@@ -295,7 +308,6 @@ class RDLGCBYOLTrainer(BaseTrainer):
 
             # Visualization if enabled
             if self.cfg.vis:
-                from util.vis import vis_rgb_gt_amp
                 root_out = self.cfg.vis_dir if self.cfg.vis_dir is not None else self.writer.logdir
                 vis_rgb_gt_amp(
                     self.img_path, self.imgs,
@@ -305,14 +317,11 @@ class RDLGCBYOLTrainer(BaseTrainer):
                     self.cfg.data.root.split('/')[1]
                 )
 
-            # Save results to disk
-            save_path = os.path.join(self.cfg.logdir, 'results')
-            save_data(
-                save_path, self.cls_name, self.img_path,
-                self.imgs_mask.cpu().numpy().astype(int),
-                anomaly_map,
-                self.anomaly.cpu().numpy().astype(int)
-            )
+            # Accumulate results in RAM (no disk I/O)
+            imgs_masks.append(self.imgs_mask.cpu().numpy().astype(int))
+            anomaly_maps.append(anomaly_map)
+            cls_names.append(np.array(self.cls_name))
+            anomalys.append(self.anomaly.cpu().numpy().astype(int))
 
             t2 = get_timepc()
             print(f'\r{batch_idx}/{test_length}', end='') if self.master else None
@@ -326,19 +335,14 @@ class RDLGCBYOLTrainer(BaseTrainer):
                     )
                     log_msg(self.logger, msg)
 
+        # Merge results
+        results = dict(imgs_masks=imgs_masks, anomaly_maps=anomaly_maps, cls_names=cls_names, anomalys=anomalys)
+        results = {k: np.concatenate(v, axis=0) for k, v in results.items()}
+
         # Compute metrics per class
         if self.master:
             msg = {}
             for idx, cls_name in enumerate(self.cls_names):
-                imgs_masks, anomaly_maps, anomalys, cls_names_data = read_data(save_path, cls_name)
-                results = dict(
-                    imgs_masks=imgs_masks,
-                    anomaly_maps=anomaly_maps,
-                    anomalys=anomalys,
-                    cls_names=cls_names_data
-                )
-
-                results = {k: np.array(v) for k, v in results.items()}
                 metric_results = self.evaluator.run(results, cls_name, self.logger)
 
                 msg['Name'] = msg.get('Name', [])

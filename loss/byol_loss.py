@@ -248,56 +248,51 @@ def generate_orthonormal_vectors(n, dim):
 
 
 @LOSS.register_module
-class PrototypeInfoNCELoss(nn.Module):
+class PrototypeBYOLLoss(nn.Module):
     """
-    Prototype-based InfoNCE loss for global features.
+    Prototype-guided BYOL loss for global features.
 
     Flow:
-    1. Features query prototypes → cosine similarity
-    2. Multiply cosine sim with features → concat with original features
-    3. Pass through projector → compute InfoNCE loss
+    Online: glo_feats → query_prototypes → linear_merge → predictor → predicted
+    Target: glo_feats_k → query_prototypes (no_grad) → linear_merge (no_grad) → target (NO predictor!)
+    Loss:   2 - 2 * cos_sim(predicted, stop_gradient(target))
 
-    Prototypes are initialized as orthogonal vectors.
+    Prototypes are initialized as orthogonal vectors and MUST be added to optimizer.
+    Asymmetry from predictor (online only) prevents collapse — same principle as dense BYOL loss.
 
     Args:
         lam: Loss weight multiplier
-        n_prototypes: Number of prototypes (default: 5)
-        feat_dim: Feature dimension (will be auto-detected from input)
-        temperature: Temperature for InfoNCE loss
+        n_prototypes: Number of prototypes (default: 10)
+        feat_dim: Feature dimension (REQUIRED, e.g. 2048 for mff_oce output)
     """
 
-    def __init__(self, lam=1.0, n_prototypes=5, feat_dim=None, temperature=0.07):
-        super(PrototypeInfoNCELoss, self).__init__()
+    def __init__(self, lam=1.0, n_prototypes=10, feat_dim=2048):
+        super(PrototypeBYOLLoss, self).__init__()
         self.lam = lam
         self.n_prototypes = n_prototypes
-        self.temperature = temperature
         self.feat_dim = feat_dim
 
-        # Prototypes will be initialized on first forward pass
-        self.prototypes = None
-        self.projector = None
+        # === Prototypes (learnable, orthonormal init) ===
+        self.prototypes = nn.Parameter(
+            generate_orthonormal_vectors(n_prototypes, feat_dim)
+        )
 
-    def _initialize_prototypes(self, feat_dim, device):
-        """Initialize prototypes as orthonormal vectors"""
-        if self.prototypes is None:
-            self.prototypes = nn.Parameter(
-                generate_orthonormal_vectors(self.n_prototypes, feat_dim).to(device)
-            )
-            self.feat_dim = feat_dim
+        # === Linear merge: concat(features, weighted_features) → feat_dim ===
+        self.linear_merge = nn.Sequential(
+            nn.Linear(feat_dim * 2, feat_dim),
+            nn.InstanceNorm1d(feat_dim),
+            nn.LeakyReLU(inplace=True),
+        )
 
-    def _initialize_projector(self, input_dim, device):
-        """
-        Initialize projector for proto-enhanced features.
-        Input: concat(features, cosine_sim * features) has dim = feat_dim + feat_dim = 2 * feat_dim
-        Output: same as feat_dim for consistency
-        """
-        if self.projector is None:
-            self.projector = nn.Sequential(
-                nn.Linear(input_dim, input_dim // 2),
-                nn.BatchNorm1d(input_dim // 2),
-                nn.ReLU(inplace=True),
-                nn.Linear(input_dim // 2, self.feat_dim),
-            ).to(device)
+        # === Predictor head (online only — creates asymmetry for BYOL) ===
+        self.predictor = nn.Sequential(
+            nn.Linear(feat_dim, feat_dim // 4),
+            nn.InstanceNorm1d(feat_dim // 4),
+            nn.LeakyReLU(inplace=True),
+            nn.Linear(feat_dim // 4, feat_dim),
+            nn.InstanceNorm1d(feat_dim),
+            nn.LeakyReLU(inplace=True),
+        )
 
     def query_prototypes(self, features):
         """
@@ -307,7 +302,7 @@ class PrototypeInfoNCELoss(nn.Module):
             features: (B, C) global features
 
         Returns:
-            enhanced_features: (B, 2*C) concatenated features
+            merged: (B, C) merged features after linear projection
         """
         # Normalize features and prototypes
         features_norm = F.normalize(features, dim=1, p=2)  # (B, C)
@@ -316,86 +311,42 @@ class PrototypeInfoNCELoss(nn.Module):
         # Compute cosine similarity with all prototypes
         cosine_sim = torch.matmul(features_norm, prototypes_norm.T)  # (B, n_proto)
 
-        # Average cosine similarities across all prototypes to get a scalar weight per sample
-        # Then expand to match feature dimension
-        avg_cosine_sim = cosine_sim.mean(dim=1, keepdim=True)  # (B, 1)
+        # Soft attention: weighted combination of prototypes
+        attn_weights = F.softmax(cosine_sim, dim=1)  # (B, n_proto)
+        proto_features = torch.matmul(attn_weights, self.prototypes)  # (B, C)
 
-        # Multiply original features with average cosine similarity
-        weighted_features = features * avg_cosine_sim  # (B, C)
+        # Concatenate: [original_features, prototype_features]
+        concat_features = torch.cat([features, proto_features], dim=1)  # (B, 2*C)
 
-        # Concatenate: [original_features, weighted_features]
-        enhanced_features = torch.cat([features, weighted_features], dim=1)  # (B, 2*C)
+        # Linear merge: 2*C → C
+        merged = self.linear_merge(concat_features)  # (B, C)
 
-        return enhanced_features
-
-    def info_nce_loss(self, q, k):
-        """
-        InfoNCE loss for prototype-enhanced features.
-
-        Args:
-            q: Online features after projector (B, C)
-            k: Target features after projector (B, C) - detached
-
-        Returns:
-            loss: InfoNCE loss value
-        """
-        # Normalize
-        q = F.normalize(q, dim=1, p=2)
-        k = F.normalize(k, dim=1, p=2)
-
-        # Positive pairs: each sample with itself
-        l_pos = torch.einsum('nc,nc->n', [q, k]).unsqueeze(-1)  # (B, 1)
-
-        # Negative pairs: each sample with all other samples in the batch
-        l_neg = torch.einsum('nc,mc->nm', [q, k])  # (B, B)
-
-        # Concatenate positive and negative logits
-        logits = torch.cat([l_pos, l_neg], dim=1)  # (B, 1+B)
-        logits /= self.temperature
-
-        # Labels: positive pair is at index 0
-        labels = torch.zeros(logits.shape[0], dtype=torch.long, device=q.device)
-
-        # Cross entropy loss
-        loss = F.cross_entropy(logits, labels)
-
-        return loss
+        return merged
 
     def forward(self, glo_feats, glo_feats_k, labels=None):
         """
-        Compute Prototype InfoNCE loss.
+        Compute Prototype BYOL loss.
 
         Args:
-            glo_feats: Online global features (B, C)
-            glo_feats_k: Target global features (B, C) - detached
+            glo_feats: Online global features (B, C) — has gradient
+            glo_feats_k: Target global features (B, C) — detached (from momentum path)
             labels: Class labels (optional, not used)
 
         Returns:
-            loss: InfoNCE loss with prototypes
+            loss: BYOL-style prototype loss
         """
-        B, C = glo_feats.shape
-        device = glo_feats.device
+        # === Online path: query_prototypes → linear_merge → predictor ===
+        merged_q = self.query_prototypes(glo_feats)
+        predicted = self.predictor(merged_q)  # Only online goes through predictor
 
-        # Initialize prototypes and projector on first forward pass
-        if self.prototypes is None:
-            self._initialize_prototypes(C, device)
-        if self.projector is None:
-            self._initialize_projector(C * 2, device)
-
-        # Query prototypes for online features
-        enhanced_q = self.query_prototypes(glo_feats)
-
-        # Query prototypes for target features (detached)
+        # === Target path: query_prototypes → linear_merge (NO predictor!) ===
         with torch.no_grad():
-            enhanced_k = self.query_prototypes(glo_feats_k)
+            merged_k = self.query_prototypes(glo_feats_k)
 
-        # Pass through projector
-        proj_q = self.projector(enhanced_q)
+        # === BYOL loss: positive pairs only ===
+        predicted = F.normalize(predicted, dim=1, p=2)
+        target = F.normalize(merged_k, dim=1, p=2)
 
-        with torch.no_grad():
-            proj_k = self.projector(enhanced_k)
-
-        # Compute InfoNCE loss
-        loss = self.info_nce_loss(proj_q, proj_k)
+        loss = 2 - 2 * (predicted * target).sum(dim=1).mean()
 
         return loss * self.lam
