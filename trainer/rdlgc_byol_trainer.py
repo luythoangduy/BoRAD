@@ -91,6 +91,13 @@ class RDLGCBYOLTrainer(BaseTrainer):
         else:
             self.optim.proto_opt = None
 
+        # === Proto warmup: train prototypes for first N% epochs, then freeze ===
+        self.proto_warmup_ratio = getattr(cfg.trainer, 'proto_warmup_ratio', 0.4)
+        self.proto_warmup_epochs = int(cfg.trainer.epoch_full * self.proto_warmup_ratio)
+        self.proto_frozen = False
+        if self.master and 'proto' in self.loss_terms:
+            log_msg(self.logger, f"[Proto] Warmup: train for {self.proto_warmup_epochs}/{cfg.trainer.epoch_full} epochs, then freeze")
+
         # === Set total steps for momentum scheduling ===
         total_steps = cfg.trainer.iter_full if hasattr(cfg.trainer, 'iter_full') else \
                      cfg.trainer.epoch_full * cfg.data.train_size
@@ -154,11 +161,24 @@ class RDLGCBYOLTrainer(BaseTrainer):
         (self.feats_t, self.feats_s, self.feats_t_k, 
          self.feats_t_q_grid, self.feats_t_k_grid, 
          self.glb_feats, self.glb_feats_k) = outputs
+    def _check_proto_freeze(self):
+        """Freeze proto params after warmup epochs."""
+        if self.proto_frozen or self.optim.proto_opt is None:
+            return
+        if self.epoch >= self.proto_warmup_epochs:
+            proto_module = self.loss_terms['proto']
+            for p in proto_module.parameters():
+                p.requires_grad = False
+            proto_module.eval()
+            self.proto_frozen = True
+            if self.master:
+                log_msg(self.logger, f"[Proto] Frozen at epoch {self.epoch} (warmup done)")
+
     def backward_term(self, loss_term, optim):
         """Backward pass with gradient clipping"""
         optim.proj_opt.zero_grad()
         optim.distill_opt.zero_grad()
-        if optim.proto_opt is not None:
+        if optim.proto_opt is not None and not self.proto_frozen:
             optim.proto_opt.zero_grad()
         
         if self.loss_scaler:
@@ -175,7 +195,7 @@ class RDLGCBYOLTrainer(BaseTrainer):
             
             optim.proj_opt.step()
             optim.distill_opt.step()
-            if optim.proto_opt is not None:
+            if optim.proto_opt is not None and not self.proto_frozen:
                 optim.proto_opt.step()
 
 
@@ -185,6 +205,8 @@ class RDLGCBYOLTrainer(BaseTrainer):
         Dynamically handles loss terms — only computes losses that exist
         in self.loss_terms, enabling ablation configs to omit components.
         """
+        self._check_proto_freeze()
+        
         if self.mixup_fn is not None:
             self.imgs, _ = self.mixup_fn(self.imgs, torch.ones(self.imgs.shape[0], device=self.imgs.device))
         
