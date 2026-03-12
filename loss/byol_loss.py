@@ -264,11 +264,12 @@ class PrototypeBYOLLoss(nn.Module):
         feat_dim: Feature dimension (REQUIRED, e.g. 2048 for mff_oce output)
     """
 
-    def __init__(self, lam=1.0, n_prototypes=10, feat_dim=2048):
+    def __init__(self, lam=1.0, n_prototypes=10, feat_dim=2048, div_weight=0.5):
         super(PrototypeBYOLLoss, self).__init__()
         self.lam = lam
         self.n_prototypes = n_prototypes
         self.feat_dim = feat_dim
+        self.div_weight = div_weight
 
         # === Prototypes (learnable, orthonormal init) ===
         self.prototypes = nn.Parameter(
@@ -335,5 +336,14 @@ class PrototypeBYOLLoss(nn.Module):
         # cos_sim per (batch, prototype) → mean over both
         per_proto_loss = 2 - 2 * (predicted * target).sum(dim=2)  # (B, N)
         loss = per_proto_loss.mean()  # average over batch and prototypes
+
+        # === Diversity Loss (Penalize sparsity/collapse) ===
+        if self.div_weight > 0 and self.n_prototypes > 1:
+            protos_norm = F.normalize(self.prototypes, dim=1, p=2)
+            sim_matrix = torch.matmul(protos_norm, protos_norm.T)  # (N, N)
+            mask = ~torch.eye(self.n_prototypes, dtype=torch.bool, device=sim_matrix.device)
+            # Penalize squared cosine similarity between different prototypes
+            loss_div = sim_matrix[mask].pow(2).mean()
+            loss = loss + self.div_weight * loss_div
 
         return loss * self.lam

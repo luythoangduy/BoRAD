@@ -70,19 +70,19 @@ class RDLGCBYOLTrainer(BaseTrainer):
         net_module = self.net.module if hasattr(self.net, 'module') else self.net
 
         # === Setup optimizers ===
-        self.optim.proj_opt = get_optim(cfg.optim.proj_opt.kwargs, net_module.predictor, lr=cfg.optim.lr)
+        self.optim.proj_opt = get_optim(cfg.optim.proj_opt.kwargs, net_module.proj_layer, lr=cfg.optim.lr*0.1)
 
         # Temporarily remove predictor for distill_opt (avoid duplicate params)
-        predictor = net_module.predictor
-        net_module.predictor = None
+        proj_layer = net_module.proj_layer
+        net_module.proj_layer = None
         self.optim.distill_opt = get_optim(cfg.optim.distill_opt.kwargs, self.net, lr=cfg.optim.lr)
-        net_module.predictor = predictor
+        net_module.proj_layer = proj_layer
 
         # === Proto loss optimizer: prototypes + linear_merge + predictor ===
         if 'proto' in self.loss_terms:
             proto_module = self.loss_terms['proto']
             self.optim.proto_opt = torch.optim.Adam(
-                proto_module.parameters(), lr=cfg.optim.lr, betas=(0.5, 0.999)
+                proto_module.parameters(), lr=cfg.optim.lr*0.01, betas=(0.5, 0.999)
             )
             proto_module.train()  # IMPORTANT: get_loss_terms sets .eval(), but BN needs .train()
             if self.master:
@@ -92,7 +92,7 @@ class RDLGCBYOLTrainer(BaseTrainer):
             self.optim.proto_opt = None
 
         # === Proto warmup: train prototypes for first N% epochs, then freeze ===
-        self.proto_warmup_ratio = getattr(cfg.trainer, 'proto_warmup_ratio', 0.4)
+        self.proto_warmup_ratio = getattr(cfg.trainer, 'proto_warmup_ratio', 1.0)
         self.proto_warmup_epochs = int(cfg.trainer.epoch_full * self.proto_warmup_ratio)
         self.proto_frozen = False
         if self.master and 'proto' in self.loss_terms:
