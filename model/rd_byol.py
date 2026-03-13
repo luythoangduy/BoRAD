@@ -461,7 +461,7 @@ class RDLGC_BYOL(nn.Module):
         # feats_t_k: Target backbone features (detached) - for dense loss spatial matching
         # feats_t_q_grid: Online predictor output (has gradient) - for dense loss
         # feats_t_k_grid: Target projector output (detached) - for dense loss
-        return feats_t, feats_s, feats_t_k, feats_t_q_grid, feats_t_k_grid, glo_feats, glo_feats_k
+        return feats_t, feats_s, feats_t_k, feats_t_q_grid, feats_t_k_grid, glo_feats, glo_feats_k, mid , mid_k
 
     def forward(self, imgs, aug_imgs=None):
         """Main forward pass"""

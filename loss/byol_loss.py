@@ -230,120 +230,140 @@ class ClassAwareBYOLDenseLoss(nn.Module):
         return total_loss / len(q_grid) * self.lam
 
 
-def generate_orthonormal_vectors(n, dim):
+def generate_orthonormal_vectors(hw, n, dim):
     """
-    Generate n orthonormal vectors of dimension dim using SVD.
-    Same as PAPN implementation.
-
+    Generate n orthonormal vectors of dimension dim for EACH spatial location.
+    
     Args:
-        n: Number of prototypes (e.g., 5)
+        hw: Number of spatial locations (H * W)
+        n: Number of prototypes per location (e.g., 5)
         dim: Dimension of each prototype (e.g., 2048)
-
-    Returns:
-        Tensor of shape (n, dim) with orthonormal rows
     """
-    A = torch.randn(dim, n)
-    U, S, Vt = torch.svd(A)
-    return U[:, :n].T  # (n, dim)
+    A = torch.randn(hw, dim, n)
+    U, S, Vh = torch.linalg.svd(A, full_matrices=False)
+    # Return shape: (hw, n, dim)
+    return U.transpose(1, 2)
 
 
 @LOSS.register_module
 class PrototypeBYOLLoss(nn.Module):
     """
-    Prototype-guided BYOL loss for global features.
-
-    For each prototype p_i, shift origin to p_i:
-        shifted_i = feature - p_i
-
-    Then compute BYOL loss per prototype and average:
-        loss = mean_over_prototypes(2 - 2 * cos_sim(predictor(shifted_online_i), shifted_target_i))
-
+    Spatial Prototype-guided BYOL loss for dense features + Global BYOL.
+    
     Args:
         lam: Loss weight multiplier
-        n_prototypes: Number of prototypes (default: 10)
-        feat_dim: Feature dimension (REQUIRED, e.g. 2048 for mff_oce output)
+        n_prototypes: Number of prototypes per spatial location (default: 10)
+        feat_dim: Feature dimension (REQUIRED, e.g. 2048)
+        H: Feature map height (REQUIRED to init spatial parameters)
+        W: Feature map width (REQUIRED to init spatial parameters)
     """
 
-    def __init__(self, lam=1.0, n_prototypes=10, feat_dim=2048, div_weight=0.5):
+    def __init__(self, lam=1.0, n_prototypes=10, feat_dim=2048, H=8, W=8):
         super(PrototypeBYOLLoss, self).__init__()
         self.lam = lam
         self.n_prototypes = n_prototypes
         self.feat_dim = feat_dim
-        self.div_weight = div_weight
+        self.H = H
+        self.W = W
 
         # === Prototypes (learnable, orthonormal init) ===
+        # Shape: (H*W, n_prototypes, feat_dim)
         self.prototypes = nn.Parameter(
-            generate_orthonormal_vectors(n_prototypes, feat_dim)
+            generate_orthonormal_vectors(H * W, n_prototypes, feat_dim)
+        )
+
+        # === Linear merge: Use 1x1 Conv to handle (B, C, H, W) natively ===
+        self.linear_merge = nn.Sequential(
+            nn.Conv2d(feat_dim * 2, feat_dim, kernel_size=1),
+            nn.InstanceNorm2d(feat_dim),
+            nn.LeakyReLU(inplace=True),
         )
 
         # === Predictor head (online only — creates asymmetry for BYOL) ===
-        # Operates per-prototype: input (B*N, C) → output (B*N, C)
         self.predictor = nn.Sequential(
-            nn.Linear(feat_dim, feat_dim),
-            nn.InstanceNorm1d(feat_dim),
+            nn.Conv2d(feat_dim, feat_dim, kernel_size=1),
+            nn.InstanceNorm2d(feat_dim),
             nn.LeakyReLU(inplace=True),
-            nn.Linear(feat_dim, feat_dim),
-            nn.InstanceNorm1d(feat_dim),
-            nn.LeakyReLU(inplace=True),
+            nn.Conv2d(feat_dim, feat_dim, kernel_size=1),
+            nn.InstanceNorm2d(feat_dim),
+            nn.LeakyReLU(inplace=True)
         )
 
-    def shift_to_prototypes(self, features):
+    def query_prototypes(self, spatial_feats):
         """
-        Shift coordinate origin to each prototype.
+        Query prototypes with spatial features and create enhanced features.
 
         Args:
-            features: (B, C) global features
+            spatial_feats: (B, C, H, W) dense features before GAP
 
         Returns:
-            shifted: (B, N, C) — features shifted to each prototype's coordinate system
-                     shifted[:, i, :] = features - prototype_i
+            merged: (B, C, H, W) merged features
         """
-        prototypes_norm = F.normalize(self.prototypes, dim=1, p=2)  # (N, C)
+        B, C, H, W = spatial_feats.shape
+        
+        # Flatten spatial dims: (B, C, H, W) -> (B, H*W, C)
+        features_flat = spatial_feats.view(B, C, -1).transpose(1, 2)
 
-        # features: (B, C) → (B, 1, C)
-        # prototypes: (N, C) → (1, N, C)
-        # shifted: (B, N, C) — feature_b shifted to prototype_n's origin
-        shifted = features.unsqueeze(1) - prototypes_norm.unsqueeze(0)  # (B, N, C)
+        # Normalize features and prototypes
+        features_norm = F.normalize(features_flat, dim=-1, p=2)    # (B, H*W, C)
+        prototypes_norm = F.normalize(self.prototypes, dim=-1, p=2) # (H*W, n_prototypes, C)
 
-        return shifted
+        # Compute cosine similarity with prototypes AT THE SAME SPATIAL LOCATION
+        cosine_sim = torch.einsum('bsc,snc->bsn', features_norm, prototypes_norm) # (B, H*W, n_prototypes)
 
-    def forward(self, glo_feats, glo_feats_k, labels=None):
+        # Soft attention: weighted combination of prototypes
+        proto_features = torch.einsum('bsn,snc->bsc', cosine_sim, self.prototypes) # (B, H*W, C)
+
+        # Reshape back to spatial grid: (B, H*W, C) -> (B, C, H, W)
+        proto_features = proto_features.transpose(1, 2).view(B, C, H, W)
+
+        # Concatenate: [original_features, prototype_features]
+        concat_features = torch.cat([spatial_feats, proto_features], dim=1)  # (B, 2*C, H, W)
+
+        # Linear merge: 2*C → C
+        merged = self.linear_merge(concat_features)  # (B, C, H, W)
+
+        return merged
+
+    def forward(self, glo_feats, glo_feats_k, spatial_feats, spatial_feats_k, labels=None):
         """
-        Compute per-prototype BYOL loss.
+        Compute Spatial Prototype BYOL loss + Global BYOL loss.
 
-        For each prototype i:
-            online_shifted_i = glo_feats - prototype_i
-            target_shifted_i = glo_feats_k - prototype_i
-            loss_i = 2 - 2 * cos_sim(predictor(online_shifted_i), target_shifted_i)
-        Total loss = mean(loss_i)
+        Args:
+            glo_feats: Online GAP features (B, C)
+            glo_feats_k: Target GAP features (B, C)
+            spatial_feats: Online dense features before GAP (B, C, H, W)
+            spatial_feats_k: Target dense features before GAP (B, C, H, W)
+            labels: Class labels (optional, not used)
         """
-        B = glo_feats.shape[0]
-        N = self.n_prototypes
+        # ==========================================
+        # 1. SPATIAL PROTOTYPE BYOL (on spatial_feats)
+        # ==========================================
+        # Online path
+        merged_q = self.query_prototypes(spatial_feats)
+        predicted_spatial = self.predictor(merged_q)  
 
-        # === Shift to each prototype's coordinate system ===
-        shifted_q = self.shift_to_prototypes(glo_feats)      # (B, N, C)
+        # Target path
         with torch.no_grad():
-            shifted_k = self.shift_to_prototypes(glo_feats_k)  # (B, N, C)
+            merged_k = self.query_prototypes(spatial_feats_k)
 
-        # === Online path: predictor (reshape to (B*N, C) for Linear layers) ===
-        predicted = self.predictor(shifted_q.reshape(B * N, -1))  # (B*N, C)
-        predicted = predicted.reshape(B, N, -1)                    # (B, N, C)
+        # Loss computation
+        predicted_spatial = F.normalize(predicted_spatial, dim=1, p=2)
+        target_spatial = F.normalize(merged_k, dim=1, p=2)
+        loss_spatial = 2 - 2 * (predicted_spatial * target_spatial).sum(dim=1).mean()
 
-        # === BYOL loss per prototype, then average ===
-        predicted = F.normalize(predicted, dim=2, p=2)   # normalize along C
-        target = F.normalize(shifted_k, dim=2, p=2)      # normalize along C
 
-        # cos_sim per (batch, prototype) → mean over both
-        per_proto_loss = 2 - 2 * (predicted * target).sum(dim=2)  # (B, N)
-        loss = per_proto_loss.mean()  # average over batch and prototypes
+        # ==========================================
+        # 2. GLOBAL BYOL (on glo_feats)
+        # ==========================================
+        glo_q = F.normalize(glo_feats, dim=1, p=2)
+        glo_k = F.normalize(glo_feats_k, dim=1, p=2)
+        loss_global = 2 - 2 * (glo_q * glo_k).sum(dim=1).mean()
 
-        # === Diversity Loss (Penalize sparsity/collapse) ===
-        if self.div_weight > 0 and self.n_prototypes > 1:
-            protos_norm = F.normalize(self.prototypes, dim=1, p=2)
-            sim_matrix = torch.matmul(protos_norm, protos_norm.T)  # (N, N)
-            mask = ~torch.eye(self.n_prototypes, dtype=torch.bool, device=sim_matrix.device)
-            # Penalize squared cosine similarity between different prototypes
-            loss_div = sim_matrix[mask].pow(2).mean()
-            loss = loss + self.div_weight * loss_div
 
-        return loss * self.lam
+        # ==========================================
+        # 3. TOTAL LOSS
+        # ==========================================
+        total_loss = loss_spatial + loss_global
+
+        return total_loss * self.lam

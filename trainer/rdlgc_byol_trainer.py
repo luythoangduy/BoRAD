@@ -70,19 +70,19 @@ class RDLGCBYOLTrainer(BaseTrainer):
         net_module = self.net.module if hasattr(self.net, 'module') else self.net
 
         # === Setup optimizers ===
-        self.optim.proj_opt = get_optim(cfg.optim.proj_opt.kwargs, net_module.proj_layer, lr=cfg.optim.lr*0.1)
+        self.optim.proj_opt = get_optim(cfg.optim.proj_opt.kwargs, net_module.predictor, lr=cfg.optim.lr)
 
         # Temporarily remove predictor for distill_opt (avoid duplicate params)
-        proj_layer = net_module.proj_layer
-        net_module.proj_layer = None
+        predictor = net_module.predictor
+        net_module.predictor = None
         self.optim.distill_opt = get_optim(cfg.optim.distill_opt.kwargs, self.net, lr=cfg.optim.lr)
-        net_module.proj_layer = proj_layer
+        net_module.predictor = predictor
 
         # === Proto loss optimizer: prototypes + linear_merge + predictor ===
         if 'proto' in self.loss_terms:
             proto_module = self.loss_terms['proto']
             self.optim.proto_opt = torch.optim.Adam(
-                proto_module.parameters(), lr=cfg.optim.lr*0.01, betas=(0.5, 0.999)
+                proto_module.parameters(), lr=cfg.optim.lr, betas=(0.5, 0.999)
             )
             proto_module.train()  # IMPORTANT: get_loss_terms sets .eval(), but BN needs .train()
             if self.master:
@@ -90,13 +90,6 @@ class RDLGCBYOLTrainer(BaseTrainer):
                 log_msg(self.logger, f"[Proto] Added {n_params} params to proto_opt")
         else:
             self.optim.proto_opt = None
-
-        # === Proto warmup: train prototypes for first N% epochs, then freeze ===
-        self.proto_warmup_ratio = getattr(cfg.trainer, 'proto_warmup_ratio', 1.0)
-        self.proto_warmup_epochs = int(cfg.trainer.epoch_full * self.proto_warmup_ratio)
-        self.proto_frozen = False
-        if self.master and 'proto' in self.loss_terms:
-            log_msg(self.logger, f"[Proto] Warmup: train for {self.proto_warmup_epochs}/{cfg.trainer.epoch_full} epochs, then freeze")
 
         # === Set total steps for momentum scheduling ===
         total_steps = cfg.trainer.iter_full if hasattr(cfg.trainer, 'iter_full') else \
@@ -160,25 +153,12 @@ class RDLGCBYOLTrainer(BaseTrainer):
         outputs = self.net(self.imgs, self.aug_imgs)
         (self.feats_t, self.feats_s, self.feats_t_k, 
          self.feats_t_q_grid, self.feats_t_k_grid, 
-         self.glb_feats, self.glb_feats_k) = outputs
-    def _check_proto_freeze(self):
-        """Freeze proto params after warmup epochs."""
-        if self.proto_frozen or self.optim.proto_opt is None:
-            return
-        if self.epoch >= self.proto_warmup_epochs:
-            proto_module = self.loss_terms['proto']
-            for p in proto_module.parameters():
-                p.requires_grad = False
-            proto_module.eval()
-            self.proto_frozen = True
-            if self.master:
-                log_msg(self.logger, f"[Proto] Frozen at epoch {self.epoch} (warmup done)")
-
+         self.glb_feats, self.glb_feats_k, self.mid, self.mid_k) = outputs
     def backward_term(self, loss_term, optim):
         """Backward pass with gradient clipping"""
         optim.proj_opt.zero_grad()
         optim.distill_opt.zero_grad()
-        if optim.proto_opt is not None and not self.proto_frozen:
+        if optim.proto_opt is not None:
             optim.proto_opt.zero_grad()
         
         if self.loss_scaler:
@@ -195,7 +175,7 @@ class RDLGCBYOLTrainer(BaseTrainer):
             
             optim.proj_opt.step()
             optim.distill_opt.step()
-            if optim.proto_opt is not None and not self.proto_frozen:
+            if optim.proto_opt is not None:
                 optim.proto_opt.step()
 
 
@@ -205,8 +185,6 @@ class RDLGCBYOLTrainer(BaseTrainer):
         Dynamically handles loss terms — only computes losses that exist
         in self.loss_terms, enabling ablation configs to omit components.
         """
-        self._check_proto_freeze()
-        
         if self.mixup_fn is not None:
             self.imgs, _ = self.mixup_fn(self.imgs, torch.ones(self.imgs.shape[0], device=self.imgs.device))
         
@@ -220,7 +198,7 @@ class RDLGCBYOLTrainer(BaseTrainer):
             # === Prototype InfoNCE loss (optional) ===
             loss_glb = None
             if 'proto' in self.loss_terms:
-                loss_glb = self.loss_terms['proto'](self.glb_feats, self.glb_feats_k, self.labels)
+                loss_glb = self.loss_terms['proto'](self.glb_feats, self.glb_feats_k,self.mid,self.mid_k, self.labels)
                 loss = loss + loss_glb
             
             # === BYOL Dense loss (optional) ===
@@ -279,36 +257,12 @@ class RDLGCBYOLTrainer(BaseTrainer):
 
             wandb.log(log_dict, step=self.iter)
 
-        # Log momentum and proto diagnostics periodically
+        # Log momentum value periodically
         if self.iter % 100 == 0 and self.master:
             current_momentum = net_module.get_current_momentum()
             if isinstance(current_momentum, torch.Tensor):
                 current_momentum = current_momentum.item()
             log_msg(self.logger, f"[BYOL] Step {self.iter}, Momentum: {current_momentum:.4f}")
-
-            # === Proto diagnostics: inter-prototype similarity ===
-            if 'proto' in self.loss_terms and hasattr(self.loss_terms['proto'], 'prototypes'):
-                with torch.no_grad():
-                    protos = self.loss_terms['proto'].prototypes  # (N, C)
-                    protos_norm = F.normalize(protos, dim=1, p=2)
-                    sim_matrix = torch.matmul(protos_norm, protos_norm.T)  # (N, N)
-                    # Mask diagonal (self-similarity = 1.0)
-                    N = sim_matrix.shape[0]
-                    mask = ~torch.eye(N, dtype=torch.bool, device=sim_matrix.device)
-                    mean_sim = sim_matrix[mask].mean().item()
-                    max_sim = sim_matrix[mask].max().item()
-
-                frozen_str = " [FROZEN]" if self.proto_frozen else ""
-                log_msg(self.logger,
-                    f"[Proto]{frozen_str} loss={loss_glb_val:.4f}, "
-                    f"inter_proto_sim: mean={mean_sim:.4f}, max={max_sim:.4f}")
-
-                if self.use_wandb:
-                    wandb.log({
-                        'proto/inter_sim_mean': mean_sim,
-                        'proto/inter_sim_max': max_sim,
-                        'proto/frozen': int(self.proto_frozen),
-                    }, step=self.iter)
 
     @torch.no_grad()
     def test(self):
