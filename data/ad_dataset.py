@@ -124,10 +124,6 @@ class DefaultAD(data.Dataset):
         self.transform = transform
         self.target_transform = target_transform
         self.aug_transform = get_transforms(cfg, train=train, cfg_transforms=cfg.data.aug_transforms)
-        if hasattr(cfg.data, 'aug_transforms_2') and cfg.data.aug_transforms_2 is not None:
-            self.aug_transform_2 = get_transforms(cfg, train=train, cfg_transforms=cfg.data.aug_transforms_2)
-        else:
-            self.aug_transform_2 = self.aug_transform
 
         self.loader = get_img_loader(cfg.data.loader_type)
         self.loader_target = get_img_loader(cfg.data.loader_type_target)
@@ -245,7 +241,7 @@ class DefaultAD(data.Dataset):
         image = self.transform(img) if self.transform is not None else img
         if self.train and self.aug_transform is not None:
             img_out = self.aug_transform(img)
-            aug_img = self.aug_transform_2(img)
+            aug_img = self.aug_transform(img)
         else:
             img_out = image
             aug_img = image
@@ -268,10 +264,6 @@ class UnifiedAD(data.Dataset):
         self.transform = transform
         self.target_transform = target_transform
         self.aug_transform = get_transforms(cfg, train=train, cfg_transforms=cfg.data.aug_transforms)
-        if hasattr(cfg.data, 'aug_transforms_2') and cfg.data.aug_transforms_2 is not None:
-            self.aug_transform_2 = get_transforms(cfg, train=train, cfg_transforms=cfg.data.aug_transforms_2)
-        else:
-            self.aug_transform_2 = self.aug_transform
 
         self.loader = get_img_loader(cfg.data.loader_type)
         self.loader_target = get_img_loader(cfg.data.loader_type_target)
@@ -361,7 +353,7 @@ class UnifiedAD(data.Dataset):
         image = self.transform(img) if self.transform is not None else img
         if self.train and self.aug_transform is not None:
             img_out = self.aug_transform(img)
-            aug_img = self.aug_transform_2(img)
+            aug_img = self.aug_transform(img)
         else:
             img_out = image
             aug_img = image

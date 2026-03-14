@@ -515,33 +515,42 @@ class RDLGC(nn.Module):
         """
         Forward pass during training with BYOL-style architecture.
 
-        Online path: imgs → encoder → projector → predictor → mff_oce → decoder
-        Target path: aug_imgs → encoder → projector_momentum → mff_oce_momentum (NO predictor!)
+        Online path: imgs → encoder → noise_mask_1 → projector → predictor → mff_oce → decoder
+        Target path: imgs → encoder → noise_mask_2 → projector_momentum → mff_oce_momentum (NO predictor!)
         """
-        # === Extract features from encoder ===
-        # imgs holds Augment 1 (T) from the dataloader
+        # === Extract features from encoder (Once) ===
         feats_t = self.net_t(imgs)      
         
-        # aug_imgs holds Augment 2 (T') from the dataloader
-        target_imgs = aug_imgs if aug_imgs is not None else imgs
-        feats_k = self.net_t(target_imgs)
+        # === Create 2 augmented views from features ===
+        feats_v1 = []
+        feats_v2 = []
+        if self.training and torch.rand(1).item() > 0.5:
+            for f in feats_t:
+                B, C, H, W = f.shape
+                # View 1
+                noise1 = torch.randn_like(f) * 0.1
+                mask1 = torch.empty((B, 1, H, W), device=imgs.device, dtype=torch.float32).bernoulli_(0.5)
+                feats_v1.append(f + noise1 * mask1)
+                
+                # View 2
+                noise2 = torch.randn_like(f) * 0.1
+                mask2 = torch.empty((B, 1, H, W), device=imgs.device, dtype=torch.float32).bernoulli_(0.5)
+                feats_v2.append(f + noise2 * mask2)
+        else:
+            feats_v1 = list(feats_t)
+            feats_v2 = list(feats_t)
 
         # === Online path: projector → predictor ===
-        feats_t_proj = self.proj_layer(feats_t)
-        feats_t_q_grid = self.predictor(feats_t_proj)  # With predictor (for BYOL loss)
+        feats_t_proj = self.proj_layer(feats_v1)
+        if hasattr(self, 'predictor') and self.predictor is not None:
+            feats_t_q_grid = self.predictor(feats_t_proj)  # With predictor (for BYOL loss)
+        else:
+            feats_t_q_grid = feats_t_proj
 
         # === Target path: projector_momentum only (NO predictor - creates asymmetry!) ===
         with torch.no_grad():
-            feats_t_k_grid = self.proj_layer_momentum(feats_k)  # No predictor!
-            feats_t_k = [f.clone() for f in feats_k]  # Detach target backbone features
-
-        # === Optional: Add noise for regularization ===
-        if self.training and torch.rand(1) > 0.5:
-            for i in range(len(feats_t_proj)):
-                noise = torch.randn_like(feats_t_proj[i]) * 0.1
-                B, C, H, W = feats_t_proj[i].shape
-                mask = torch.randint(0, 2, (B, 1, H, W), device=imgs.device).float()
-                feats_t_proj[i] = feats_t_proj[i] + noise * mask
+            feats_t_k_grid = self.proj_layer_momentum(feats_v2)  # No predictor!
+            feats_t_k = [f.detach() for f in feats_t]  # ZERO-COPY detach target backbone features
 
         # === Feature fusion ===
         # Online path: use online mff_oce

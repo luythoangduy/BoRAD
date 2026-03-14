@@ -780,23 +780,33 @@ class MAMBAADLGC(nn.Module):
         return self
 
     def train_forward(self, imgs, aug_imgs=None):
-        # imgs holds Augment 1 (T), aug_imgs holds Augment 2 (T')
+        # === Extract features from encoder (Once) ===
         feats_t = self.net_t(imgs)
-        target_imgs = aug_imgs if aug_imgs is not None else imgs
-        feats_k = self.net_t(target_imgs)
-        feats_t_q_grid = self.proj_layer(feats_t)
-        feats_t_k_grid = self.proj_layer(feats_k)
+        
+        # === Create 2 augmented views from features ===
+        feats_v1 = []
+        feats_v2 = []
+        if self.training and torch.rand(1).item() > 0.5:
+            for f in feats_t:
+                B, C, H, W = f.shape
+                # View 1
+                noise1 = torch.randn_like(f) * 0.1
+                mask1 = torch.empty((B, 1, H, W), device=imgs.device, dtype=torch.float32).bernoulli_(0.5)
+                feats_v1.append(f + noise1 * mask1)
+                
+                # View 2
+                noise2 = torch.randn_like(f) * 0.1
+                mask2 = torch.empty((B, 1, H, W), device=imgs.device, dtype=torch.float32).bernoulli_(0.5)
+                feats_v2.append(f + noise2 * mask2)
+        else:
+            feats_v1 = list(feats_t)
+            feats_v2 = list(feats_t)
+
+        feats_t_q_grid = self.proj_layer(feats_v1)
+        feats_t_k_grid = self.proj_layer_momentum(feats_v2)
 
         feats_t_q = [f.detach() for f in feats_t]
-        feats_t_k = [f.detach() for f in feats_k]
-
-        add_noise = torch.randn(1)
-        if add_noise > 0.5 and self.training:
-            for i in range(len(feats_t_q)):
-                noise = torch.randn_like(feats_t_q[i]).to(imgs.device)
-                B, C, H, W = feats_t_q[i].shape
-                mask = torch.randint(0, 2, (B, 1, H, W)).to(imgs.device)
-                feats_t_q_grid[i] += noise * mask
+        feats_t_k = [f.detach() for f in feats_t]
 
         mid = self.mff_oce(feats_t_q_grid)
         feats_s = self.net_s(mid)

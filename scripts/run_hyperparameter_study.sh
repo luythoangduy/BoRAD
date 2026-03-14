@@ -33,21 +33,40 @@ GPU=${GPU:-0}
 SEED=${SEED:-42}
 STUDY=${STUDY:-all}  # all, H1, H2, H3, H4, H5
 BASE_CFG="configs/rd/rd_byol_mvtec.py"
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-LOG_DIR="logs/hyperparam_${TIMESTAMP}"
-mkdir -p "$LOG_DIR"
 
-echo "================================================================"
-echo "  BoRAD Hyperparameter Sensitivity Analysis"
-echo "  GPU: $GPU | Seed: $SEED | Study: $STUDY"
-echo "  Log dir: $LOG_DIR"
-echo "================================================================"
+if [ -n "$RESUME_DIR" ]; then
+    LOG_DIR="$RESUME_DIR"
+    echo "================================================================"
+    echo "  RESUMING BoRAD Hyperparameter Sensitivity Analysis"
+    echo "  GPU: $GPU | Seed: $SEED | Study: $STUDY"
+    echo "  Resuming from: $LOG_DIR"
+    echo "================================================================"
+else
+    TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+    LOG_DIR="logs/hyperparam_${TIMESTAMP}"
+    mkdir -p "$LOG_DIR"
+
+    echo "================================================================"
+    echo "  BoRAD Hyperparameter Sensitivity Analysis"
+    echo "  GPU: $GPU | Seed: $SEED | Study: $STUDY"
+    echo "  Log dir: $LOG_DIR"
+    echo "================================================================"
+fi
 
 # Helper function
 run_exp() {
     local name=$1
     shift
     local extra_opts="$@"
+
+    if [ -n "$RESUME_DIR" ] && [ -f "$LOG_DIR/${name}.log" ]; then
+        if grep -q "best metric" "$LOG_DIR/${name}.log"; then
+           echo "--------------------------------------------------------------"
+           echo "  [$name] ⏭ SKIPPED (already completed in $LOG_DIR)"
+           echo "--------------------------------------------------------------"
+           return
+        fi
+    fi
 
     echo ""
     echo "--------------------------------------------------------------"

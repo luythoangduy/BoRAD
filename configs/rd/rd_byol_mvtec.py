@@ -70,31 +70,15 @@ class cfg(cfg_common, cfg_dataset_default, cfg_model_rd):
         ]
 
         # Strong augmentations for BYOL (important for preventing collapse)
-        # Strong augmentations for BYOL (T)
+        # Strong augmentations for BYOL (important for preventing collapse)
         self.data.aug_transforms = [
-            dict(type='RandomResizedCrop', size=(self.size, self.size), scale=(0.08, 1.0)),
+            dict(type='RandomResizedCrop', size=(self.size, self.size), scale=(0.8, 1.0)),
             dict(type='RandomHorizontalFlip', p=0.5),
-            dict(type='RandomApply', transforms=[
-                dict(type='ColorJitter', brightness=0.4, contrast=0.4, saturation=0.2, hue=0.1)
-            ], p=0.8),
+            dict(type='RandomVerticalFlip', p=0.5),
+            dict(type='ColorJitter', brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1),
             dict(type='RandomGrayscale', p=0.2),
             dict(type='GaussianBlur', kernel_size=23, sigma=(0.1, 2.0)),
-            dict(type='ToTensor'),
-            dict(type='Normalize', mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD, inplace=True),
-        ]
-
-        # Strong augmentations for BYOL momentum branch (T')
-        self.data.aug_transforms_2 = [
-            dict(type='RandomResizedCrop', size=(self.size, self.size), scale=(0.08, 1.0)),
-            dict(type='RandomHorizontalFlip', p=0.5),
-            dict(type='RandomApply', transforms=[
-                dict(type='ColorJitter', brightness=0.4, contrast=0.4, saturation=0.2, hue=0.1)
-            ], p=0.8),
-            dict(type='RandomGrayscale', p=0.2),
-            dict(type='RandomApply', transforms=[
-                dict(type='GaussianBlur', kernel_size=23, sigma=(0.1, 2.0))
-            ], p=0.1),
-            dict(type='RandomSolarize', threshold=128, p=0.2),
+            dict(type='RandomRotation', degrees=15),
             dict(type='ToTensor'),
             dict(type='Normalize', mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD, inplace=True),
         ]

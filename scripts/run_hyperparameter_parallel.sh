@@ -30,15 +30,24 @@ NGPUS=${NGPUS:-4}
 SEED=${SEED:-42}
 STUDY=${STUDY:-all}
 BASE_CFG="configs/rd/rd_byol_mvtec.py"
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-LOG_DIR="logs/hyperparam_parallel_${TIMESTAMP}"
-mkdir -p "$LOG_DIR"
 
-echo "================================================================"
-echo "  BoRAD Hyperparameter Study (Parallel, ${NGPUS} GPUs)"
-echo "  Seed: $SEED | Study: $STUDY"
-echo "  Log dir: $LOG_DIR"
-echo "================================================================"
+# If RESUME_DIR is provided, use it. Otherwise, create a new TIMESTAMP dir.
+if [ -n "$RESUME_DIR" ]; then
+    LOG_DIR="$RESUME_DIR"
+    echo "================================================================"
+    echo "  RESUMING BoRAD Hyperparameter Study"
+    echo "  Resuming from: $LOG_DIR"
+    echo "================================================================"
+else
+    TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+    LOG_DIR="logs/hyperparam_parallel_${TIMESTAMP}"
+    mkdir -p "$LOG_DIR"
+    echo "================================================================"
+    echo "  BoRAD Hyperparameter Study (Parallel, ${NGPUS} GPUs)"
+    echo "  Seed: $SEED | Study: $STUDY"
+    echo "  Log dir: $LOG_DIR"
+    echo "================================================================"
+fi
 
 # ──────────────────────────────────────────────────────────────────────
 # Job queue: collect all experiments, then dispatch across GPUs
@@ -133,6 +142,16 @@ run_on_gpu() {
     local gpu=$1
     local name=$2
     local opts=$3
+
+    # Skip if job is already done (by checking if log exists and has "Done" or if we just want to skip any existing log)
+    # We will simply check if the log file exists and has size > 0. 
+    # For more robust check, you could grep for "Training completed" in the log.
+    if [ -n "$RESUME_DIR" ] && [ -f "$LOG_DIR/${name}.log" ]; then
+        if grep -q "best metric" "$LOG_DIR/${name}.log"; then
+           echo "  [GPU $gpu] ⏭ $name (already completed in $LOG_DIR)"
+           return
+        fi
+    fi
 
     echo "  [GPU $gpu] ▶ $name"
     CUDA_VISIBLE_DEVICES=$gpu python run.py \

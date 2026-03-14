@@ -406,21 +406,39 @@ class RDLGC_BYOL(nn.Module):
         Forward pass during training (BYOL-style with momentum).
 
         Architecture:
-        - Online path: imgs → encoder → projector → predictor → q_grid
-        - Target path: aug_imgs → encoder → momentum_projector → k_grid (NO predictor!)
+        - Online path: imgs → encoder → noise_mask_1 → projector → predictor → q_grid
+        - Target path: imgs → encoder → noise_mask_2 → momentum_projector → k_grid (NO predictor!)
 
         Key design choices:
-        1. Both paths use TWO DIFFERENT augmented views (imgs and aug_imgs)
-        2. Difference comes from momentum parameters (EMA updated)
-        3. Predictor asymmetry prevents collapse
-        4. Target represents stable features of the SAME image heavily augmented
+        1. Both paths use the SAME initial image (encoder runs once)
+        2. Two augmented views are created spatially via noise masks BEFORE projection
+        3. Difference comes from momentum parameters (EMA updated)
+        4. Predictor asymmetry prevents collapse
         """
-        # === Extract features from encoder ===
-        # imgs holds Augment 1 (T) from the dataloader's 'img' key
+        # === Extract features from encoder (Once) ===
         feats_t = self.net_t(imgs)  
 
+        # === Create 2 augmented views from features ===
+        feats_v1 = []
+        feats_v2 = []
+        if self.training and torch.rand(1).item() > 0.5:
+            for f in feats_t:
+                B, C, H, W = f.shape
+                # View 1
+                noise1 = torch.randn_like(f) * 0.1
+                mask1 = torch.empty((B, 1, H, W), device=imgs.device, dtype=torch.float32).bernoulli_(0.5)
+                feats_v1.append(f + noise1 * mask1)
+                
+                # View 2
+                noise2 = torch.randn_like(f) * 0.1
+                mask2 = torch.empty((B, 1, H, W), device=imgs.device, dtype=torch.float32).bernoulli_(0.5)
+                feats_v2.append(f + noise2 * mask2)
+        else:
+            feats_v1 = list(feats_t)
+            feats_v2 = list(feats_t)
+
         # === Online path: projector → predictor ===
-        feats_t_proj = self.proj_layer(feats_t)
+        feats_t_proj = self.proj_layer(feats_v1)
         if self.predictor is not None:
             feats_t_q_grid = self.predictor(feats_t_proj)  # With predictor (for BYOL loss)
         else:
@@ -428,20 +446,8 @@ class RDLGC_BYOL(nn.Module):
 
         # === Target path: Augmented image through momentum network ===
         with torch.no_grad():
-            # aug_imgs holds Augment 2 (T') from the dataloader's 'aug_img' key
-            target_imgs = aug_imgs if aug_imgs is not None else imgs
-            feats_k = self.net_t(target_imgs)  # Target: Augmented view 2, same frozen encoder
-            feats_t_k_grid = self.proj_layer_momentum(feats_k)  # Momentum projector (NO predictor!)
-            feats_t_k = [f.clone() for f in feats_k]  # Detach target backbone features
-
-        # === Optional: Add noise for regularization ===
-        # Add noise to projected features BEFORE passing to mff_oce
-        if self.training and torch.rand(1) > 0.5:
-            for i in range(len(feats_t_proj)):
-                noise = torch.randn_like(feats_t_proj[i]) * 0.1
-                B, C, H, W = feats_t_proj[i].shape
-                mask = torch.randint(0, 2, (B, 1, H, W), device=imgs.device).float()
-                feats_t_proj[i] = feats_t_proj[i] + noise * mask
+            feats_t_k_grid = self.proj_layer_momentum(feats_v2)  # Momentum projector (NO predictor!)
+            feats_t_k = [f.detach() for f in feats_t]  # ZERO-COPY detach target backbone features
 
         # === Feature fusion and decoding ===
         # Use projected features (NOT predicted) for reconstruction
