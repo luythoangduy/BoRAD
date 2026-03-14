@@ -124,6 +124,10 @@ class DefaultAD(data.Dataset):
         self.transform = transform
         self.target_transform = target_transform
         self.aug_transform = get_transforms(cfg, train=train, cfg_transforms=cfg.data.aug_transforms)
+        if hasattr(cfg.data, 'aug_transforms_2') and cfg.data.aug_transforms_2 is not None:
+            self.aug_transform_2 = get_transforms(cfg, train=train, cfg_transforms=cfg.data.aug_transforms_2)
+        else:
+            self.aug_transform_2 = self.aug_transform
 
         self.loader = get_img_loader(cfg.data.loader_type)
         self.loader_target = get_img_loader(cfg.data.loader_type_target)
@@ -239,11 +243,17 @@ class DefaultAD(data.Dataset):
             img_mask = np.array(self.loader_target(f'{self.root}/{mask_path}')) > 0
             img_mask = Image.fromarray(img_mask.astype(np.uint8) * 255, mode='L')
         image = self.transform(img) if self.transform is not None else img
-        aug_img = self.aug_transform(img) if self.aug_transform is not None and self.train else image
+        if self.train and self.aug_transform is not None:
+            img_out = self.aug_transform(img)
+            aug_img = self.aug_transform_2(img)
+        else:
+            img_out = image
+            aug_img = image
+
         img_mask = self.target_transform(
             img_mask) if self.target_transform is not None and img_mask is not None else img_mask
         img_mask = [] if img_mask is None else img_mask
-        return {'img': image, 'img_mask': img_mask, 'cls_name': cls_name, 'anomaly': anomaly, 'img_path': img_path,
+        return {'img': img_out, 'img_mask': img_mask, 'cls_name': cls_name, 'anomaly': anomaly, 'img_path': img_path,
                 'label': int(self.cls2idx[cls_name]), 'aug_img': aug_img}
 
 
@@ -258,6 +268,10 @@ class UnifiedAD(data.Dataset):
         self.transform = transform
         self.target_transform = target_transform
         self.aug_transform = get_transforms(cfg, train=train, cfg_transforms=cfg.data.aug_transforms)
+        if hasattr(cfg.data, 'aug_transforms_2') and cfg.data.aug_transforms_2 is not None:
+            self.aug_transform_2 = get_transforms(cfg, train=train, cfg_transforms=cfg.data.aug_transforms_2)
+        else:
+            self.aug_transform_2 = self.aug_transform
 
         self.loader = get_img_loader(cfg.data.loader_type)
         self.loader_target = get_img_loader(cfg.data.loader_type_target)
@@ -345,11 +359,17 @@ class UnifiedAD(data.Dataset):
             img_mask = np.array(self.loader_target(mask_path)) > 0
             img_mask = Image.fromarray(img_mask.astype(np.uint8) * 255, mode='L')
         image = self.transform(img) if self.transform is not None else img
-        aug_img = self.aug_transform(img) if self.aug_transform is not None and self.train else image
+        if self.train and self.aug_transform is not None:
+            img_out = self.aug_transform(img)
+            aug_img = self.aug_transform_2(img)
+        else:
+            img_out = image
+            aug_img = image
+
         img_mask = self.target_transform(
             img_mask) if self.target_transform is not None and img_mask is not None else img_mask
         img_mask = [] if img_mask is None else img_mask
-        return {'img': image, 'img_mask': img_mask, 'cls_name': cls_name, 'anomaly': anomaly, 'img_path': img_path,
+        return {'img': img_out, 'img_mask': img_mask, 'cls_name': cls_name, 'anomaly': anomaly, 'img_path': img_path,
                 'label': int(self.cls2idx[cls_name]), 'aug_img': aug_img}
 
 

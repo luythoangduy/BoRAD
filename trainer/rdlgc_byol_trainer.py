@@ -185,8 +185,8 @@ class RDLGCBYOLTrainer(BaseTrainer):
         Dynamically handles loss terms — only computes losses that exist
         in self.loss_terms, enabling ablation configs to omit components.
         """
-        if self.mixup_fn is not None:
-            self.imgs, _ = self.mixup_fn(self.imgs, torch.ones(self.imgs.shape[0], device=self.imgs.device))
+        # if self.mixup_fn is not None:
+        #     self.imgs, _ = self.mixup_fn(self.imgs, torch.ones(self.imgs.shape[0], device=self.imgs.device))
         
         with self.amp_autocast():
             self.forward()

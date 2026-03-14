@@ -519,8 +519,12 @@ class RDLGC(nn.Module):
         Target path: aug_imgs → encoder → projector_momentum → mff_oce_momentum (NO predictor!)
         """
         # === Extract features from encoder ===
-        feats_t = self.net_t(imgs)      # Online input features
-        feats_k = self.net_t(aug_imgs)  # Target input features
+        # imgs holds Augment 1 (T) from the dataloader
+        feats_t = self.net_t(imgs)      
+        
+        # aug_imgs holds Augment 2 (T') from the dataloader
+        target_imgs = aug_imgs if aug_imgs is not None else imgs
+        feats_k = self.net_t(target_imgs)
 
         # === Online path: projector → predictor ===
         feats_t_proj = self.proj_layer(feats_t)

@@ -4,13 +4,26 @@ from . import TRANSFORMS
 
 
 def get_transforms(cfg, train, cfg_transforms):
-	transform_list = []
-	for t in cfg_transforms:
-		t = {k: v for k, v in t.items()}
-		t_type = t.pop('type')
-		t_tran = TRANSFORMS.get_module(t_type)(**t)
-		transform_list.extend(t_tran) if isinstance(t_tran, list) else transform_list.append(t_tran)
-	transform_out = TRANSFORMS.get_module('Compose')(transform_list)
+    if cfg_transforms is None:
+        return None
+    transform_list = []
+    for t in cfg_transforms:
+        t = {k: v for k, v in t.items()}
+        t_type = t.pop('type')
+
+        # Recursively instantiate nested transforms (e.g. for RandomApply)
+        for k, v in t.items():
+            if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict) and 'type' in v[0]:
+                nested_list = []
+                for nt in v:
+                    nt_copy = {nk: nv for nk, nv in nt.items()}
+                    nt_type = nt_copy.pop('type')
+                    nested_list.append(TRANSFORMS.get_module(nt_type)(**nt_copy))
+                t[k] = nested_list
+
+        t_tran = TRANSFORMS.get_module(t_type)(**t)
+        transform_list.extend(t_tran) if isinstance(t_tran, list) else transform_list.append(t_tran)
+    transform_out = TRANSFORMS.get_module('Compose')(transform_list)
 
 	# if train:
 	# 	if cfg.size <= 32:

@@ -779,9 +779,11 @@ class MAMBAADLGC(nn.Module):
                 module.train(mode)
         return self
 
-    def train_forward(self, imgs, aug_imgs):
+    def train_forward(self, imgs, aug_imgs=None):
+        # imgs holds Augment 1 (T), aug_imgs holds Augment 2 (T')
         feats_t = self.net_t(imgs)
-        feats_k = self.net_t(aug_imgs)
+        target_imgs = aug_imgs if aug_imgs is not None else imgs
+        feats_k = self.net_t(target_imgs)
         feats_t_q_grid = self.proj_layer(feats_t)
         feats_t_k_grid = self.proj_layer(feats_k)
 

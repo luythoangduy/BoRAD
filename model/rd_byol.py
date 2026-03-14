@@ -407,21 +407,17 @@ class RDLGC_BYOL(nn.Module):
 
         Architecture:
         - Online path: imgs → encoder → projector → predictor → q_grid
-        - Target path: imgs → encoder → momentum_projector → k_grid (NO predictor!)
+        - Target path: aug_imgs → encoder → momentum_projector → k_grid (NO predictor!)
 
         Key design choices:
-        1. Both paths use SAME image (not augmented views)
+        1. Both paths use TWO DIFFERENT augmented views (imgs and aug_imgs)
         2. Difference comes from momentum parameters (EMA updated)
         3. Predictor asymmetry prevents collapse
-        4. aug_imgs parameter kept for compatibility but NOT used
-
-        Why same image for both paths?
-        - Target should represent stable features of the SAME content
-        - Momentum network provides smooth, stable targets
-        - Augmentation diversity handled by data pipeline (if needed)
+        4. Target represents stable features of the SAME image heavily augmented
         """
         # === Extract features from encoder ===
-        feats_t = self.net_t(imgs)  # Online: original image
+        # imgs holds Augment 1 (T) from the dataloader's 'img' key
+        feats_t = self.net_t(imgs)  
 
         # === Online path: projector → predictor ===
         feats_t_proj = self.proj_layer(feats_t)
@@ -430,9 +426,11 @@ class RDLGC_BYOL(nn.Module):
         else:
             feats_t_q_grid = feats_t_proj  # No predictor — identity path for ablation
 
-        # === Target path: SAME image through momentum network ===
+        # === Target path: Augmented image through momentum network ===
         with torch.no_grad():
-            feats_k = self.net_t(imgs)  # Target: SAME image, same frozen encoder
+            # aug_imgs holds Augment 2 (T') from the dataloader's 'aug_img' key
+            target_imgs = aug_imgs if aug_imgs is not None else imgs
+            feats_k = self.net_t(target_imgs)  # Target: Augmented view 2, same frozen encoder
             feats_t_k_grid = self.proj_layer_momentum(feats_k)  # Momentum projector (NO predictor!)
             feats_t_k = [f.clone() for f in feats_k]  # Detach target backbone features
 

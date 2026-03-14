@@ -101,8 +101,8 @@ class RDLGCTrainer(BaseTrainer):
             optim.distill_opt.step()
 
     def optimize_parameters(self):
-        if self.mixup_fn is not None:
-            self.imgs, _ = self.mixup_fn(self.imgs, torch.ones(self.imgs.shape[0], device=self.imgs.device))
+        # if self.mixup_fn is not None:
+        #     self.imgs, _ = self.mixup_fn(self.imgs, torch.ones(self.imgs.shape[0], device=self.imgs.device))
         with self.amp_autocast():
             self.forward()
 
