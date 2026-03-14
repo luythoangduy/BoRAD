@@ -455,16 +455,12 @@ class RDLGC_BYOL(nn.Module):
         feats_s = self.net_s(mid)
 
         # === Global features for SCL ===
-        # glo_feats = F.adaptive_avg_pool2d(mid, 1).squeeze()
-        # glo_feats_k = F.adaptive_avg_pool2d(mid_k, 1).squeeze()
+        glo_feats = F.adaptive_avg_pool2d(mid, 1).squeeze()
+        glo_feats_k = F.adaptive_avg_pool2d(mid_k, 1).squeeze()
 
         # Return features WITH gradient for losses (DO NOT detach feats_t!)
         # feats_t: Online backbone features (has gradient) - for cos loss
         # feats_s: Decoder output (has gradient) - for cos loss
-        glo_feats = None
-        glo_feats_k = None
-        mid_k = None
-
         return feats_t, feats_s, glo_feats, glo_feats_k, mid, mid_k
 
     def forward(self, imgs, aug_imgs=None):

@@ -25,10 +25,10 @@ def get_transforms(cfg, train, cfg_transforms):
         transform_list.extend(t_tran) if isinstance(t_tran, list) else transform_list.append(t_tran)
     transform_out = TRANSFORMS.get_module('Compose')(transform_list)
 
-	# if train:
-	# 	if cfg.size <= 32:
-	# 		transform_out[0] = transforms.RandomCrop(cfg.size, padding=4)
-	return transform_out
+    # if train:
+    # 	if cfg.size <= 32:
+    # 		transform_out[0] = transforms.RandomCrop(cfg.size, padding=4)
+    return transform_out
 
 
 def make_divisible(v, divisor=8, min_value=None):

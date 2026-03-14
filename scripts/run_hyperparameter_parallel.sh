@@ -132,6 +132,24 @@ if [[ "$STUDY" == "all" || "$STUDY" == "H5" ]]; then
     done
 fi
 
+# ══════════════════════════════════════════════════════════════════════
+# H6: Spatial Proto Loss Weight (lam_spatial)
+# ══════════════════════════════════════════════════════════════════════
+if [[ "$STUDY" == "all" || "$STUDY" == "H6" ]]; then
+    for L in 0.1 0.5 2.0 5.0; do
+        add_job "H6_lam_spatial_${L}" loss.loss_terms.1.lam_spatial=${L}
+    done
+fi
+
+# ══════════════════════════════════════════════════════════════════════
+# H7: Global Proto Loss Weight (lam_global)
+# ══════════════════════════════════════════════════════════════════════
+if [[ "$STUDY" == "all" || "$STUDY" == "H7" ]]; then
+    for L in 0.1 0.5 2.0 5.0; do
+        add_job "H7_lam_global_${L}" loss.loss_terms.1.lam_global=${L}
+    done
+fi
+
 # ──────────────────────────────────────────────────────────────────────
 # Dispatch: Round-robin job assignment across GPUs
 # ──────────────────────────────────────────────────────────────────────

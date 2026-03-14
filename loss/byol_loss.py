@@ -258,13 +258,15 @@ class PrototypeBYOLLoss(nn.Module):
         W: Feature map width (REQUIRED to init spatial parameters)
     """
 
-    def __init__(self, lam=1.0, n_prototypes=10, feat_dim=2048, H=8, W=8):
+    def __init__(self, lam=1.0, n_prototypes=10, feat_dim=2048, H=8, W=8, lam_spatial=1.0, lam_global=1.0):
         super(PrototypeBYOLLoss, self).__init__()
         self.lam = lam
         self.n_prototypes = n_prototypes
         self.feat_dim = feat_dim
         self.H = H
         self.W = W
+        self.lam_spatial = lam_spatial
+        self.lam_global = lam_global
 
         # === Prototypes (learnable, orthonormal init) ===
         # Shape: (H*W, n_prototypes, feat_dim)
@@ -288,6 +290,34 @@ class PrototypeBYOLLoss(nn.Module):
             nn.InstanceNorm2d(feat_dim),
             nn.LeakyReLU(inplace=True)
         )
+
+        # === Global Predictor head ===
+        self.global_predictor = nn.Sequential(
+            nn.Linear(feat_dim, feat_dim),
+            nn.InstanceNorm1d(feat_dim),
+            nn.LeakyReLU(inplace=True),
+            nn.Linear(feat_dim, feat_dim),
+            nn.InstanceNorm1d(feat_dim),
+            nn.LeakyReLU(inplace=True)
+        )
+
+    def shift_to_prototypes(self, features):
+        """
+        Shift coordinate origin to each prototype for global features.
+
+        Args:
+            features: (B, C) global features
+
+        Returns:
+            shifted: (B, N, C) — features shifted to each prototype's origin
+        """
+        # self.prototypes has shape (H*W, n_prototypes, C)
+        # We mean-pool across spatial locations to get global prototypes
+        global_prototypes = self.prototypes.mean(dim=0)  # (N, C)
+        prototypes_norm = F.normalize(global_prototypes, dim=1, p=2)  # (N, C)
+        # Shift: features (B, 1, C) - prototypes (1, N, C) = (B, N, C)
+        shifted = features.unsqueeze(1) - prototypes_norm.unsqueeze(0)
+        return shifted
 
     def query_prototypes(self, spatial_feats):
         """
@@ -354,16 +384,30 @@ class PrototypeBYOLLoss(nn.Module):
 
 
         # ==========================================
-        # 2. GLOBAL BYOL (on glo_feats)
+        # 2. GLOBAL PROTOTYPE BYOL (on glo_feats)
         # ==========================================
-        glo_q = F.normalize(glo_feats, dim=1, p=2)
-        glo_k = F.normalize(glo_feats_k, dim=1, p=2)
-        loss_global = 2 - 2 * (glo_q * glo_k).sum(dim=1).mean()
+        B = glo_feats.shape[0]
+        N = self.n_prototypes
 
+        # Shift to each prototype's coordinate system
+        shifted_q = self.shift_to_prototypes(glo_feats)      # (B, N, C)
+        with torch.no_grad():
+            shifted_k = self.shift_to_prototypes(glo_feats_k)  # (B, N, C)
+
+        # Online predictor
+        predicted_global = self.global_predictor(shifted_q.reshape(B * N, -1))  # (B*N, C)
+        predicted_global = predicted_global.reshape(B, N, -1)                   # (B, N, C)
+
+        # BYOL loss per prototype
+        predicted_global = F.normalize(predicted_global, dim=2, p=2)
+        target_global = F.normalize(shifted_k, dim=2, p=2)
+        
+        per_proto_loss = 2 - 2 * (predicted_global * target_global).sum(dim=2)  # (B, N)
+        loss_global = per_proto_loss.mean()
 
         # ==========================================
         # 3. TOTAL LOSS
         # ==========================================
-        total_loss = loss_spatial + loss_global
+        total_loss = self.lam_spatial * loss_spatial + self.lam_global * loss_global
 
         return total_loss * self.lam

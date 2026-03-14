@@ -133,17 +133,17 @@ fi
 # ==============================================================================
 # H4: Proto Loss Weight (loss_terms[2] = PrototypeInfoNCELoss)
 # ==============================================================================
-if [[ "$STUDY" == "all" || "$STUDY" == "H4" ]]; then
-    echo ""
-    echo "=============================================="
-    echo "  H4: Proto Loss Weight (λ_proto)"
-    echo "=============================================="
+# if [[ "$STUDY" == "all" || "$STUDY" == "H4" ]]; then
+#     echo ""
+#     echo "=============================================="
+#     echo "  H4: Proto Loss Weight (λ_proto)"
+#     echo "=============================================="
 
-    for LAM_P in 0.1 0.5 1.0 2.0 5.0; do
-        run_exp "H4_lam_proto_${LAM_P}" \
-            loss.loss_terms.1.lam=${LAM_P}
-    done
-fi
+#     for LAM_P in 0.1 0.5 1.0 2.0 5.0; do
+#         run_exp "H4_lam_proto_${LAM_P}" \
+#             loss.loss_terms.1.lam=${LAM_P}
+#     done
+# fi
 
 # ==============================================================================
 # H5: Momentum Schedule × Value (3×3 = 9 runs)
@@ -177,11 +177,41 @@ if [[ "$STUDY" == "all" || "$STUDY" == "H5" ]]; then
 fi
 
 # ==============================================================================
+# H6: Spatial Proto Loss Weight (lam_spatial)
+# ==============================================================================
+if [[ "$STUDY" == "all" || "$STUDY" == "H6" ]]; then
+    echo ""
+    echo "=============================================="
+    echo "  H6: Spatial Proto Loss Weight (lam_spatial)"
+    echo "=============================================="
+
+    for LAM_S in 0.1 0.5 1.0 2.0 5.0; do
+        run_exp "H6_lam_spatial_${LAM_S}" \
+            loss.loss_terms.1.lam_spatial=${LAM_S}
+    done
+fi
+
+# ==============================================================================
+# H7: Global Proto Loss Weight (lam_global)
+# ==============================================================================
+if [[ "$STUDY" == "all" || "$STUDY" == "H7" ]]; then
+    echo ""
+    echo "=============================================="
+    echo "  H7: Global Proto Loss Weight (lam_global)"
+    echo "=============================================="
+
+    for LAM_G in 0.1 0.5 1.0 2.0 5.0; do
+        run_exp "H7_lam_global_${LAM_G}" \
+            loss.loss_terms.1.lam_global=${LAM_G}
+    done
+fi
+
+# ==============================================================================
 # SUMMARY
 # ==============================================================================
 echo ""
 echo "================================================================"
-echo "  HYPERPARAMETER STUDY COMPLETED"
+echo "  EXPERIMENTS FINISHED"
 echo "================================================================"
 echo "  Results saved in: $LOG_DIR"
 echo ""
