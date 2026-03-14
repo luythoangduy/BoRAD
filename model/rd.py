@@ -423,8 +423,9 @@ def rd(pretrained=False, **kwargs):
 
 class RDLGC(nn.Module):
     def __init__(self, model_t, model_s, dp=False, momentum=0.99,
-                 momentum_schedule='constant', momentum_start=0.9, momentum_end=0.999):
+                 momentum_schedule='constant', momentum_start=0.9, momentum_end=0.999, mask_ratio=0.5):
         super(RDLGC, self).__init__()
+        self.mask_ratio = mask_ratio
         self.net_t = get_model(model_t)
 
         # === Online Network ===
@@ -432,8 +433,8 @@ class RDLGC(nn.Module):
         self.mff_oce = MFF_OCE(Bottleneck, 3)
 
         # === Predictor (BYOL-style - creates asymmetry) ===
-        from .rd_byol import MultiPredictorLayer
-        self.predictor = MultiPredictorLayer(base=64)
+        # from .rd_byol import MultiPredictorLayer
+        # self.predictor = MultiPredictorLayer(base=64)
 
         # === Target Network (Momentum) ===
         self.proj_layer_momentum = MultiProjectionLayer(base=64, dp=dp)
@@ -527,14 +528,16 @@ class RDLGC(nn.Module):
         if self.training and torch.rand(1).item() > 0.5:
             for f in feats_t:
                 B, C, H, W = f.shape
-                # View 1
-                noise1 = torch.randn_like(f) * 0.1
-                mask1 = torch.empty((B, 1, H, W), device=imgs.device, dtype=torch.float32).bernoulli_(0.5)
-                feats_v1.append(f + noise1 * mask1)
                 
-                # View 2
+                # Generate noise and mask for BOTH views simultaneously (faster & guarantees distinct values)
+                # Generate noise and mask for View 1
+                noise1 = torch.randn_like(f) * 0.1
+                mask1 = torch.empty((B, 1, H, W), device=imgs.device, dtype=torch.float32).bernoulli_(1 - self.mask_ratio)
+                feats_v1.append(f + noise1 * mask1)
+
+                # Generate noise and mask for View 2
                 noise2 = torch.randn_like(f) * 0.1
-                mask2 = torch.empty((B, 1, H, W), device=imgs.device, dtype=torch.float32).bernoulli_(0.5)
+                mask2 = torch.empty((B, 1, H, W), device=imgs.device, dtype=torch.float32).bernoulli_(1 - self.mask_ratio)
                 feats_v2.append(f + noise2 * mask2)
         else:
             feats_v1 = list(feats_t)
@@ -542,10 +545,6 @@ class RDLGC(nn.Module):
 
         # === Online path: projector → predictor ===
         feats_t_proj = self.proj_layer(feats_v1)
-        if hasattr(self, 'predictor') and self.predictor is not None:
-            feats_t_q_grid = self.predictor(feats_t_proj)  # With predictor (for BYOL loss)
-        else:
-            feats_t_q_grid = feats_t_proj
 
         # === Target path: projector_momentum only (NO predictor - creates asymmetry!) ===
         with torch.no_grad():
@@ -567,13 +566,7 @@ class RDLGC(nn.Module):
         glo_feats = F.adaptive_avg_pool2d(mid, 1).squeeze()
         glo_feats_k = F.adaptive_avg_pool2d(mid_k, 1).squeeze()
 
-        # Return features WITH gradient for losses (DO NOT detach feats_t!)
-        # feats_t: Online backbone features (has gradient) - for cos loss and dense loss spatial matching
-        # feats_s: Decoder output (has gradient) - for cos loss
-        # feats_t_k: Target backbone features (detached) - for dense loss spatial matching
-        # feats_t_q_grid: Online predictor output (has gradient) - for dense loss
-        # feats_t_k_grid: Target projector output (detached) - for dense loss
-        return feats_t, feats_s, feats_t_k, feats_t_q_grid, feats_t_k_grid, glo_feats, glo_feats_k
+        return feats_t, feats_s, glo_feats, glo_feats_k, mid, mid_k
 
     def forward(self, imgs, aug_imgs=None):
         if self.training:
@@ -587,11 +580,9 @@ class RDLGC(nn.Module):
 
         glo_feats = None
         glo_feats_k = None
-        feats_t_k = None
-        feats_t_q_grid = None
-        feats_t_k_grid = None
+        mid_k = None
 
-        return feats_t, feats_s, feats_t_k, feats_t_q_grid, feats_t_k_grid, glo_feats, glo_feats_k
+        return feats_t, feats_s, glo_feats, glo_feats_k, mid, mid_k
 
 
 @MODEL.register_module

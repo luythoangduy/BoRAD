@@ -240,8 +240,8 @@ class DefaultAD(data.Dataset):
             img_mask = Image.fromarray(img_mask.astype(np.uint8) * 255, mode='L')
         image = self.transform(img) if self.transform is not None else img
         if self.train and self.aug_transform is not None:
-            img_out = self.aug_transform(img)
-            aug_img = self.aug_transform(img)
+            img_out = image#self.aug_transform(img)
+            aug_img = image#img_out
         else:
             img_out = image
             aug_img = image
@@ -353,7 +353,7 @@ class UnifiedAD(data.Dataset):
         image = self.transform(img) if self.transform is not None else img
         if self.train and self.aug_transform is not None:
             img_out = self.aug_transform(img)
-            aug_img = self.aug_transform(img)
+            aug_img = img_out
         else:
             img_out = image
             aug_img = image

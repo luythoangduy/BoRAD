@@ -86,7 +86,7 @@ run_exp() {
 }
 
 # ==============================================================================
-# H1: Number of Prototypes (loss_terms[2] = PrototypeInfoNCELoss)
+# H1: Number of Prototypes (loss_terms[1] = PrototypeInfoNCELoss)
 # ==============================================================================
 if [[ "$STUDY" == "all" || "$STUDY" == "H1" ]]; then
     echo ""
@@ -96,12 +96,12 @@ if [[ "$STUDY" == "all" || "$STUDY" == "H1" ]]; then
 
     for N_PROTO in 3 5 7 10; do
         run_exp "H1_nproto_${N_PROTO}" \
-            loss.loss_terms.2.n_prototypes=${N_PROTO}
+            loss.loss_terms.1.n_prototypes=${N_PROTO}
     done
 fi
 
 # ==============================================================================
-# H2: Temperature (loss_terms[2] = PrototypeInfoNCELoss)
+# H2: Temperature (loss_terms[1] = PrototypeInfoNCELoss)
 # ==============================================================================
 if [[ "$STUDY" == "all" || "$STUDY" == "H2" ]]; then
     echo ""
@@ -111,22 +111,22 @@ if [[ "$STUDY" == "all" || "$STUDY" == "H2" ]]; then
 
     for TEMP in 0.01 0.05 0.07 0.1 0.5; do
         run_exp "H2_temp_${TEMP}" \
-            loss.loss_terms.2.temperature=${TEMP}
+            loss.loss_terms.1.temperature=${TEMP}
     done
 fi
 
 # ==============================================================================
-# H3: Dense Loss Weight (loss_terms[1] = BYOLDenseLoss)
+# H3: Masking Ratio
 # ==============================================================================
 if [[ "$STUDY" == "all" || "$STUDY" == "H3" ]]; then
     echo ""
     echo "=============================================="
-    echo "  H3: Dense Loss Weight (λ_dense)"
+    echo "  H3: Masking Ratio"
     echo "=============================================="
 
-    for LAM_D in 0.1 0.5 1.0 2.0 5.0; do
-        run_exp "H3_lam_dense_${LAM_D}" \
-            loss.loss_terms.1.lam=${LAM_D}
+    for RATIO in 0.1 0.3 0.5 0.7 0.9; do
+        run_exp "H3_mask_${RATIO}" \
+            model.kwargs.mask_ratio=${RATIO}
     done
 fi
 
@@ -141,7 +141,7 @@ if [[ "$STUDY" == "all" || "$STUDY" == "H4" ]]; then
 
     for LAM_P in 0.1 0.5 1.0 2.0 5.0; do
         run_exp "H4_lam_proto_${LAM_P}" \
-            loss.loss_terms.2.lam=${LAM_P}
+            loss.loss_terms.1.lam=${LAM_P}
     done
 fi
 

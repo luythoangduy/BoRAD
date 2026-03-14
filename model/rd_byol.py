@@ -310,10 +310,12 @@ class RDLGC_BYOL(nn.Module):
                  momentum=0.99,
                  momentum_schedule='cosine',
                  momentum_start=0.9,
-                 momentum_end=0.999):
+                 momentum_end=0.999,
+                 mask_ratio=0.5):
         super(RDLGC_BYOL, self).__init__()
         
         self.use_predictor = use_predictor
+        self.mask_ratio = mask_ratio
         
         # === Encoder (Teacher - frozen) ===
         self.net_t = get_model(model_t)
@@ -424,25 +426,22 @@ class RDLGC_BYOL(nn.Module):
         if self.training and torch.rand(1).item() > 0.5:
             for f in feats_t:
                 B, C, H, W = f.shape
-                # View 1
+
+                # Generate noise and mask for View 1
                 noise1 = torch.randn_like(f) * 0.1
-                mask1 = torch.empty((B, 1, H, W), device=imgs.device, dtype=torch.float32).bernoulli_(0.5)
+                mask1 = torch.empty((B, 1, H, W), device=imgs.device, dtype=torch.float32).bernoulli_(1 - self.mask_ratio)
                 feats_v1.append(f + noise1 * mask1)
                 
-                # View 2
+                # Generate noise and mask for View 2
                 noise2 = torch.randn_like(f) * 0.1
-                mask2 = torch.empty((B, 1, H, W), device=imgs.device, dtype=torch.float32).bernoulli_(0.5)
+                mask2 = torch.empty((B, 1, H, W), device=imgs.device, dtype=torch.float32).bernoulli_(1 - self.mask_ratio)
                 feats_v2.append(f + noise2 * mask2)
         else:
             feats_v1 = list(feats_t)
             feats_v2 = list(feats_t)
 
-        # === Online path: projector → predictor ===
+        # === Online path: projector ===
         feats_t_proj = self.proj_layer(feats_v1)
-        if self.predictor is not None:
-            feats_t_q_grid = self.predictor(feats_t_proj)  # With predictor (for BYOL loss)
-        else:
-            feats_t_q_grid = feats_t_proj  # No predictor — identity path for ablation
 
         # === Target path: Augmented image through momentum network ===
         with torch.no_grad():
@@ -450,22 +449,23 @@ class RDLGC_BYOL(nn.Module):
             feats_t_k = [f.detach() for f in feats_t]  # ZERO-COPY detach target backbone features
 
         # === Feature fusion and decoding ===
-        # Use projected features (NOT predicted) for reconstruction
+        # Use projected features for reconstruction
         mid = self.mff_oce(feats_t_proj)
-        mid_k = self.mff_oce(feats_t_k_grid)
+        mid_k = self.mff_oce_momentum(feats_t_k_grid)
         feats_s = self.net_s(mid)
 
         # === Global features for SCL ===
-        glo_feats = F.adaptive_avg_pool2d(mid, 1).squeeze()
-        glo_feats_k = F.adaptive_avg_pool2d(mid_k, 1).squeeze()
+        # glo_feats = F.adaptive_avg_pool2d(mid, 1).squeeze()
+        # glo_feats_k = F.adaptive_avg_pool2d(mid_k, 1).squeeze()
 
         # Return features WITH gradient for losses (DO NOT detach feats_t!)
-        # feats_t: Online backbone features (has gradient) - for cos loss and dense loss spatial matching
+        # feats_t: Online backbone features (has gradient) - for cos loss
         # feats_s: Decoder output (has gradient) - for cos loss
-        # feats_t_k: Target backbone features (detached) - for dense loss spatial matching
-        # feats_t_q_grid: Online predictor output (has gradient) - for dense loss
-        # feats_t_k_grid: Target projector output (detached) - for dense loss
-        return feats_t, feats_s, feats_t_k, feats_t_q_grid, feats_t_k_grid, glo_feats, glo_feats_k, mid , mid_k
+        glo_feats = None
+        glo_feats_k = None
+        mid_k = None
+
+        return feats_t, feats_s, glo_feats, glo_feats_k, mid, mid_k
 
     def forward(self, imgs, aug_imgs=None):
         """Main forward pass"""
@@ -473,13 +473,7 @@ class RDLGC_BYOL(nn.Module):
             return self.train_forward(imgs, aug_imgs)
 
         # === Inference mode ===
-        feats_t = self.net_t(imgs)
-        feats_t_detached = [f.detach() for f in feats_t]  # Detach for inference
-        feats = self.proj_layer(feats_t_detached)
-        mid = self.mff_oce(feats)
-        feats_s = self.net_s(mid)
-
-        return feats_t_detached, feats_s, None, None, None, None, None
+        return feats_t_detached, feats_s, None, None, None, None
 
 
 # ============================================================================

@@ -45,18 +45,14 @@ class RDLGCTrainer(BaseTrainer):
         net_module = self.net.module if hasattr(self.net, 'module') else self.net
 
         # === Setup optimizers ===
-        # Create a module list containing proj_layer + predictor for optimizer
-        proj_and_pred = torch.nn.ModuleList([net_module.proj_layer, net_module.predictor])
-        self.optim.proj_opt = get_optim(cfg.optim.proj_opt.kwargs, proj_and_pred, lr=cfg.optim.lr)
-
-        # Temporarily remove proj_layer and predictor for distill_opt
+        # Ensure predictor is not initialized since it's removed
         proj_layer = net_module.proj_layer
-        predictor = net_module.predictor
+        self.optim.proj_opt = get_optim(cfg.optim.proj_opt.kwargs, proj_layer, lr=cfg.optim.lr)
+
+        # Temporarily remove proj_layer for distill_opt
         net_module.proj_layer = None
-        net_module.predictor = None
         self.optim.distill_opt = get_optim(cfg.optim.distill_opt.kwargs, self.net, lr=cfg.optim.lr * 5)
         net_module.proj_layer = proj_layer
-        net_module.predictor = predictor
 
         # === Set total steps for momentum scheduling ===
         total_steps = cfg.trainer.iter_full if hasattr(cfg.trainer, 'iter_full') else \
@@ -83,8 +79,7 @@ class RDLGCTrainer(BaseTrainer):
             self.aug_imgs = self.aug_imgs.cuda()
 
     def forward(self):
-        self.feats_t, self.feats_s, self.feats_t_k, self.feats_t_q_grid, self.feats_t_k_grid, self.glb_feats, self.glb_feats_k = self.net(
-            self.imgs, self.aug_imgs)
+        (self.feats_t, self.feats_s, self.glb_feats, self.glb_feats_k, self.mid, self.mid_k) = self.net(self.imgs, self.aug_imgs)
 
     def backward_term(self, loss_term, optim):
         optim.proj_opt.zero_grad()

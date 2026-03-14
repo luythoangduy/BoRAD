@@ -80,11 +80,16 @@ if [[ "$STUDY" == "all" || "$STUDY" == "H2" ]]; then
 fi
 
 # ══════════════════════════════════════════════════════════════════════
-# H3: Dense loss weight (default=1.0, skip 1.0)
+# H3: Masking Ratio (mask_ratio)
 # ══════════════════════════════════════════════════════════════════════
 if [[ "$STUDY" == "all" || "$STUDY" == "H3" ]]; then
-    for L in 0.1 0.5 2.0 5.0; do
-        add_job "H3_lam_dense_${L}" loss.loss_terms.1.lam=${L}
+    declare -a MASK_RATIOS=(0.1 0.3 0.5 0.7 0.9)
+    for RATIO in "${MASK_RATIOS[@]}"; do
+        # We test this with standard settings (lam_proto=1.0)
+        add_job "H3_mask_${RATIO}" \
+            loss.kwargs_proto.n_prototypes=10 \
+            model.kwargs.mask_ratio=${RATIO} \
+            loss_terms.proto.lam=1.0
     done
 fi
 

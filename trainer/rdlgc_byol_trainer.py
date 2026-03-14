@@ -151,9 +151,7 @@ class RDLGCBYOLTrainer(BaseTrainer):
     def forward(self):
         """Forward pass"""
         outputs = self.net(self.imgs, self.aug_imgs)
-        (self.feats_t, self.feats_s, self.feats_t_k, 
-         self.feats_t_q_grid, self.feats_t_k_grid, 
-         self.glb_feats, self.glb_feats_k, self.mid, self.mid_k) = outputs
+        (self.feats_t, self.feats_s, self.glb_feats, self.glb_feats_k, self.mid, self.mid_k) = outputs
     def backward_term(self, loss_term, optim):
         """Backward pass with gradient clipping"""
         optim.proj_opt.zero_grad()

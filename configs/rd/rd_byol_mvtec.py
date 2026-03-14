@@ -28,7 +28,7 @@ class cfg(cfg_common, cfg_dataset_default, cfg_model_rd):
         self.size = 256
         self.epoch_full = 100
         self.warmup_epochs = 0
-        self.test_start_epoch = self.epoch_full
+        self.test_start_epoch = self.epoch_full // 10
         self.test_per_epoch = self.epoch_full // 10
         self.batch_train = 16  # official 16
         self.batch_test_per = 16
@@ -70,7 +70,6 @@ class cfg(cfg_common, cfg_dataset_default, cfg_model_rd):
         ]
 
         # Strong augmentations for BYOL (important for preventing collapse)
-        # Strong augmentations for BYOL (important for preventing collapse)
         self.data.aug_transforms = [
             dict(type='RandomResizedCrop', size=(self.size, self.size), scale=(0.8, 1.0)),
             dict(type='RandomHorizontalFlip', p=0.5),
@@ -107,7 +106,8 @@ class cfg(cfg_common, cfg_dataset_default, cfg_model_rd):
             momentum=0.99,  # Final momentum value
             momentum_schedule='linear',  # 'constant', 'cosine', or 'linear'
             momentum_start=0.99,  # Starting momentum (for scheduled updates)
-            momentum_end=0.999   # Ending momentum (for scheduled updates)
+            momentum_end=0.999,   # Ending momentum (for scheduled updates)
+            mask_ratio=0.5
         )
 
         # ==> evaluator
@@ -118,8 +118,8 @@ class cfg(cfg_common, cfg_dataset_default, cfg_model_rd):
         self.optim.proj_opt = Namespace()
         self.optim.distill_opt = Namespace()
         self.optim.lr = self.lr
-        self.optim.proj_opt.kwargs = dict(name='adam', betas=(0.5, 0.999))
-        self.optim.distill_opt.kwargs = dict(name='adam', betas=(0.5, 0.999))
+        self.optim.proj_opt.kwargs = dict(name='adam', betas=(0.8, 0.999))
+        self.optim.distill_opt.kwargs = dict(name='adam', betas=(0.8, 0.999))
 
 
         # ==> trainer (BYOL trainer)
@@ -184,7 +184,7 @@ class cfg(cfg_common, cfg_dataset_default, cfg_model_rd):
         self.loss.loss_terms = [
             dict(type='CosLoss', name='cos', avg=False, lam=1.0),
             # Dense BYOL: local features with spatial matching
-            dict(type='BYOLDenseLoss', name='dense', lam=2.0, use_spatial_matching=False),
+            # dict(type='BYOLDenseLoss', name='dense', lam=2.0, use_spatial_matching=False),
             # Prototype InfoNCE: global features with prototype learning
             dict(type='PrototypeBYOLLoss', name='proto', lam=1.0, n_prototypes=10, feat_dim=2048),
         ]

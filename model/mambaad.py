@@ -724,8 +724,9 @@ class MultiProjectionLayer(nn.Module):
 
 
 class MAMBAAD(nn.Module):
-    def __init__(self, model_t, model_s):
+    def __init__(self, model_t, model_s, mask_ratio=0.5):
         super(MAMBAAD, self).__init__()
+        self.mask_ratio = mask_ratio
         self.net_t = get_model(model_t)
         self.mff_oce = MFF_OCE(Bottleneck, 3)
         self.net_s = MambaUPNet(depths_decoder=model_s['depths_decoder'], scan_type=model_s['scan_type'],
@@ -789,15 +790,13 @@ class MAMBAADLGC(nn.Module):
         if self.training and torch.rand(1).item() > 0.5:
             for f in feats_t:
                 B, C, H, W = f.shape
-                # View 1
-                noise1 = torch.randn_like(f) * 0.1
-                mask1 = torch.empty((B, 1, H, W), device=imgs.device, dtype=torch.float32).bernoulli_(0.5)
-                feats_v1.append(f + noise1 * mask1)
                 
-                # View 2
-                noise2 = torch.randn_like(f) * 0.1
-                mask2 = torch.empty((B, 1, H, W), device=imgs.device, dtype=torch.float32).bernoulli_(0.5)
-                feats_v2.append(f + noise2 * mask2)
+                # Generate noise and mask for BOTH views simultaneously (faster & guarantees distinct values)
+                noise = torch.randn((2, B, C, H, W), device=imgs.device) * 0.1
+                mask = torch.empty((2, B, 1, H, W), device=imgs.device, dtype=torch.float32).bernoulli_(1 - self.mask_ratio)
+                
+                feats_v1.append(f + noise[0] * mask[0])
+                feats_v2.append(f + noise[1] * mask[1])
         else:
             feats_v1 = list(feats_t)
             feats_v2 = list(feats_t)
@@ -812,7 +811,7 @@ class MAMBAADLGC(nn.Module):
         feats_s = self.net_s(mid)
         glo_feats = F.adaptive_avg_pool2d(mid, 1).squeeze()
 
-        return feats_t_q, feats_s, feats_t_k, feats_t_q_grid, feats_t_k_grid, glo_feats
+        return feats_t_q, feats_s, glo_feats, mid
 
     def forward(self, imgs, aug_imgs=None):
         if self.training:
@@ -825,11 +824,8 @@ class MAMBAADLGC(nn.Module):
         feats_s = self.net_s(mid)
 
         glo_feats = None
-        feats_t_k = None
-        feats_t_q_grid = None
-        feats_t_k_grid = None
 
-        return feats_t, feats_s, feats_t_k, feats_t_q_grid, feats_t_k_grid, glo_feats
+        return feats_t, feats_s, glo_feats, mid
 
 @MODEL.register_module
 def mambaad(pretrained=False, **kwargs):
