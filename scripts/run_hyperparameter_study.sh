@@ -6,24 +6,15 @@
 # Studies (all on MVTec with full model config):
 #   H1: Number of prototypes       — 3, 5, 7, 10
 #   H2: Temperature (Proto)        — 0.01, 0.05, 0.07, 0.1, 0.5
-#   H3: Dense loss weight (λ_d)    — 0.1, 0.5, 1.0, 2.0, 5.0
-#   H4: Proto loss weight (λ_p)    — 0.1, 0.5, 1.0, 2.0, 5.0
+#   H3: Masking Ratio              — 0.1, 0.3, 0.5, 0.7, 0.9
+#   H4: Proto loss weight          — 0.1, 0.5, 1.0, 2.0, 5.0
 #   H5: Momentum (schedule × val)  — {constant,linear,cosine} × {0.9,0.99,0.999}
-#
-# Total: 4 + 5 + 5 + 5 + 9 = 28 runs
-#
-# Base config loss_terms ordering:
-#   [0] = CosLoss (name='cos')
-#   [1] = BYOLDenseLoss (name='dense')
-#   [2] = PrototypeInfoNCELoss (name='proto')
-#
-# Config overrides use dot-notation with list indexing:
-#   loss.loss_terms.2.n_prototypes=10  → changes proto's n_prototypes to 10
+#   H6: Spatial Proto Loss Weight  — 0, 0.1, 0.5, 1.0, 2.0
+#   H7: Global Proto Loss Weight   — 0, 0.1, 0.5, 1.0, 2.0
 #
 # Usage:
 #   GPU=0 bash scripts/run_hyperparameter_study.sh
 #   GPU=0 STUDY=H1 bash scripts/run_hyperparameter_study.sh   # run only H1
-#   GPU=0 STUDY=H5 bash scripts/run_hyperparameter_study.sh   # run only H5
 # ==============================================================================
 
 set -e
@@ -31,7 +22,7 @@ set -e
 # Configuration
 GPU=${GPU:-0}
 SEED=${SEED:-42}
-STUDY=${STUDY:-all}  # all, H1, H2, H3, H4, H5
+STUDY=${STUDY:-all}  # all, H1, H2, H3, H4, H5, H6, H7
 BASE_CFG="configs/rd/rd_byol_mvtec.py"
 
 if [ -n "$RESUME_DIR" ]; then
@@ -86,7 +77,7 @@ run_exp() {
 }
 
 # ==============================================================================
-# H1: Number of Prototypes (loss_terms[1] = PrototypeInfoNCELoss)
+# H1: Number of Prototypes
 # ==============================================================================
 if [[ "$STUDY" == "all" || "$STUDY" == "H1" ]]; then
     echo ""
@@ -101,7 +92,7 @@ if [[ "$STUDY" == "all" || "$STUDY" == "H1" ]]; then
 fi
 
 # ==============================================================================
-# H2: Temperature (loss_terms[1] = PrototypeInfoNCELoss)
+# H2: Temperature (Prototype InfoNCE)
 # ==============================================================================
 if [[ "$STUDY" == "all" || "$STUDY" == "H2" ]]; then
     echo ""
@@ -131,22 +122,22 @@ if [[ "$STUDY" == "all" || "$STUDY" == "H3" ]]; then
 fi
 
 # ==============================================================================
-# H4: Proto Loss Weight (loss_terms[2] = PrototypeInfoNCELoss)
+# H4: Proto Loss Weight (λ_proto)
 # ==============================================================================
-# if [[ "$STUDY" == "all" || "$STUDY" == "H4" ]]; then
-#     echo ""
-#     echo "=============================================="
-#     echo "  H4: Proto Loss Weight (λ_proto)"
-#     echo "=============================================="
+if [[ "$STUDY" == "all" || "$STUDY" == "H4" ]]; then
+    echo ""
+    echo "=============================================="
+    echo "  H4: Proto Loss Weight (λ_proto)"
+    echo "=============================================="
 
-#     for LAM_P in 0.1 0.5 1.0 2.0 5.0; do
-#         run_exp "H4_lam_proto_${LAM_P}" \
-#             loss.loss_terms.1.lam=${LAM_P}
-#     done
-# fi
+    for LAM_P in 0.1 0.5 1.0 2.0 5.0; do
+        run_exp "H4_lam_proto_${LAM_P}" \
+            loss.loss_terms.1.lam=${LAM_P}
+    done
+fi
 
 # ==============================================================================
-# H5: Momentum Schedule × Value (3×3 = 9 runs)
+# H5: Momentum Schedule × Value
 # ==============================================================================
 if [[ "$STUDY" == "all" || "$STUDY" == "H5" ]]; then
     echo ""
@@ -155,24 +146,28 @@ if [[ "$STUDY" == "all" || "$STUDY" == "H5" ]]; then
     echo "=============================================="
 
     for SCHEDULE in constant linear cosine; do
-        for MOM_VAL in 0.9 0.99 0.999; do
-            if [[ "$SCHEDULE" == "constant" ]]; then
-                # For constant: start = end = MOM_VAL
+        if [[ "$SCHEDULE" == "constant" ]]; then
+            # For constant: just test different absolute momentum values
+            for MOM_VAL in 0.9 0.99 0.999; do
                 run_exp "H5_mom_${SCHEDULE}_${MOM_VAL}" \
                     model.kwargs.momentum=${MOM_VAL} \
                     model.kwargs.momentum_schedule=${SCHEDULE} \
                     model.kwargs.momentum_start=${MOM_VAL} \
                     model.kwargs.momentum_end=${MOM_VAL}
-            else
-                # For scheduled: start lower, end at MOM_VAL
-                MOM_START=$(echo "$MOM_VAL" | awk '{printf "%.4f", $1 * 0.9}')
-                run_exp "H5_mom_${SCHEDULE}_${MOM_VAL}" \
-                    model.kwargs.momentum=${MOM_VAL} \
+            done
+        else
+            # For scheduled (linear/cosine), test explicit start -> end ranges
+            # 0.9 -> 0.999 and 0.99 -> 0.999
+            for MOM_START in 0.9 0.99; do
+                MOM_END=0.999
+                
+                run_exp "H5_mom_${SCHEDULE}_${MOM_START}_${MOM_END}" \
+                    model.kwargs.momentum=${MOM_END} \
                     model.kwargs.momentum_schedule=${SCHEDULE} \
                     model.kwargs.momentum_start=${MOM_START} \
-                    model.kwargs.momentum_end=${MOM_VAL}
-            fi
-        done
+                    model.kwargs.momentum_end=${MOM_END}
+            done
+        fi
     done
 fi
 
@@ -185,7 +180,7 @@ if [[ "$STUDY" == "all" || "$STUDY" == "H6" ]]; then
     echo "  H6: Spatial Proto Loss Weight (lam_spatial)"
     echo "=============================================="
 
-    for LAM_S in 0.1 0.5 1.0 2.0 5.0; do
+    for LAM_S in 0 0.1 0.5 1.0 2.0; do
         run_exp "H6_lam_spatial_${LAM_S}" \
             loss.loss_terms.1.lam_spatial=${LAM_S}
     done
@@ -200,7 +195,7 @@ if [[ "$STUDY" == "all" || "$STUDY" == "H7" ]]; then
     echo "  H7: Global Proto Loss Weight (lam_global)"
     echo "=============================================="
 
-    for LAM_G in 0.1 0.5 1.0 2.0 5.0; do
+    for LAM_G in 0 0.1 0.5 1.0 2.0; do
         run_exp "H7_lam_global_${LAM_G}" \
             loss.loss_terms.1.lam_global=${LAM_G}
     done
@@ -215,11 +210,3 @@ echo "  EXPERIMENTS FINISHED"
 echo "================================================================"
 echo "  Results saved in: $LOG_DIR"
 echo ""
-echo "  Studies:"
-echo "    H1: n_prototypes     = {3, 5, 7, 10}                 (4 runs)"
-echo "    H2: temperature      = {0.01, 0.05, 0.07, 0.1, 0.5}  (5 runs)"
-echo "    H3: λ_dense          = {0.1, 0.5, 1.0, 2.0, 5.0}     (5 runs)"
-echo "    H4: λ_proto          = {0.1, 0.5, 1.0, 2.0, 5.0}     (5 runs)"
-echo "    H5: momentum sched×val = 3×3                          (9 runs)"
-echo "    Total: 28 runs"
-echo "================================================================"

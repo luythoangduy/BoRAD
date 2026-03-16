@@ -428,14 +428,12 @@ class RDLGC_BYOL(nn.Module):
                 B, C, H, W = f.shape
 
                 # Generate noise and mask for View 1
-                noise1 = torch.randn_like(f) * 0.1
                 mask1 = torch.empty((B, 1, H, W), device=imgs.device, dtype=torch.float32).bernoulli_(1 - self.mask_ratio)
-                feats_v1.append(f + noise1 * mask1)
+                feats_v1.append(f * mask1)
                 
                 # Generate noise and mask for View 2
-                noise2 = torch.randn_like(f) * 0.1
                 mask2 = torch.empty((B, 1, H, W), device=imgs.device, dtype=torch.float32).bernoulli_(1 - self.mask_ratio)
-                feats_v2.append(f + noise2 * mask2)
+                feats_v2.append(f * mask2)
         else:
             feats_v1 = list(feats_t)
             feats_v2 = list(feats_t)
@@ -469,6 +467,11 @@ class RDLGC_BYOL(nn.Module):
             return self.train_forward(imgs, aug_imgs)
 
         # === Inference mode ===
+        feats_t = self.net_t(imgs)
+        feats_t_detached = [f.detach() for f in feats_t]  # Detach for inference
+        feats = self.proj_layer(feats_t_detached)
+        mid = self.mff_oce(feats)
+        feats_s = self.net_s(mid)
         return feats_t_detached, feats_s, None, None, None, None
 
 

@@ -107,28 +107,31 @@ fi
 # ══════════════════════════════════════════════════════════════════════
 if [[ "$STUDY" == "all" || "$STUDY" == "H5" ]]; then
     for SCHED in constant linear cosine; do
-        for MOM in 0.9 0.99 0.999; do
-            # Skip default: linear + 0.999
-            if [[ "$SCHED" == "linear" && "$MOM" == "0.999" ]]; then
-                echo "  [SKIP] H5_mom_${SCHED}_${MOM} (= base config default)"
-                continue
-            fi
-
-            if [[ "$SCHED" == "constant" ]]; then
+        if [[ "$SCHED" == "constant" ]]; then
+            for MOM in 0.9 0.99 0.999; do
                 add_job "H5_mom_${SCHED}_${MOM}" \
                     model.kwargs.momentum=${MOM} \
                     model.kwargs.momentum_schedule=${SCHED} \
                     model.kwargs.momentum_start=${MOM} \
                     model.kwargs.momentum_end=${MOM}
-            else
-                MOM_START=$(echo "$MOM" | awk '{printf "%.4f", $1 * 0.9}')
-                add_job "H5_mom_${SCHED}_${MOM}" \
-                    model.kwargs.momentum=${MOM} \
+            done
+        else
+            # For linear/cosine: test specific start->end ranges
+            for MOM_START in 0.9 0.99; do
+                MOM_END=0.999
+                
+                if [[ "$SCHED" == "linear" && "$MOM_START" == "0.99" ]]; then
+                    echo "  [SKIP] H5_mom_${SCHED}_${MOM_START}_${MOM_END} (= base config default)"
+                    continue
+                fi
+
+                add_job "H5_mom_${SCHED}_${MOM_START}_${MOM_END}" \
+                    model.kwargs.momentum=${MOM_END} \
                     model.kwargs.momentum_schedule=${SCHED} \
                     model.kwargs.momentum_start=${MOM_START} \
-                    model.kwargs.momentum_end=${MOM}
-            fi
-        done
+                    model.kwargs.momentum_end=${MOM_END}
+            done
+        fi
     done
 fi
 
@@ -136,7 +139,7 @@ fi
 # H6: Spatial Proto Loss Weight (lam_spatial)
 # ══════════════════════════════════════════════════════════════════════
 if [[ "$STUDY" == "all" || "$STUDY" == "H6" ]]; then
-    for L in 0.1 0.5 2.0 5.0; do
+    for L in 0 0.1 0.5 1.0 2.0; do
         add_job "H6_lam_spatial_${L}" loss.loss_terms.1.lam_spatial=${L}
     done
 fi
@@ -145,7 +148,7 @@ fi
 # H7: Global Proto Loss Weight (lam_global)
 # ══════════════════════════════════════════════════════════════════════
 if [[ "$STUDY" == "all" || "$STUDY" == "H7" ]]; then
-    for L in 0.1 0.5 2.0 5.0; do
+    for L in 0 0.1 0.5 1.0 2.0; do
         add_job "H7_lam_global_${L}" loss.loss_terms.1.lam_global=${L}
     done
 fi

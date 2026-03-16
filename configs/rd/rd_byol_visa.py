@@ -159,7 +159,7 @@ class cfg(cfg_common, cfg_dataset_default, cfg_model_rd):
         self.loss.loss_terms = [
             dict(type='CosLoss', name='cos', avg=False, lam=1.0),
             dict(type='BYOLDenseLoss', name='dense', lam=2.0, use_spatial_matching=False),
-            dict(type='PrototypeBYOLLoss', name='proto', lam=1.0, n_prototypes=10, feat_dim=2048),
+            dict(type='PrototypeBYOLLoss', name='proto', lam=1.0, n_prototypes=7, feat_dim=2048),
         ]
 
         # ==> logging

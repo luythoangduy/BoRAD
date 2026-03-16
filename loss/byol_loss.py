@@ -258,7 +258,7 @@ class PrototypeBYOLLoss(nn.Module):
         W: Feature map width (REQUIRED to init spatial parameters)
     """
 
-    def __init__(self, lam=1.0, n_prototypes=10, feat_dim=2048, H=8, W=8, lam_spatial=1.0, lam_global=1.0):
+    def __init__(self, lam=1.0, n_prototypes=7, feat_dim=2048, H=8, W=8, lam_spatial=1.0, lam_global=1.0):
         super(PrototypeBYOLLoss, self).__init__()
         self.lam = lam
         self.n_prototypes = n_prototypes
