@@ -89,7 +89,7 @@ def load_model_and_loss(config_path, checkpoint_path, device):
 
 
 @torch.no_grad()
-def extract_features_with_prototype_info(model, loss_terms, dataloader, device):
+def extract_features_with_prototype_info(model, loss_terms, dataloader, device, include_anomaly_info=False):
     """
     Extract global features AND their relationship with prototypes.
     """
@@ -100,8 +100,8 @@ def extract_features_with_prototype_info(model, loss_terms, dataloader, device):
     all_features = []
     all_labels = []
     all_cls_names = []
+    all_anomalies = []
     all_proto_sims = []    # cosine similarity with each prototype
-    all_proto_enhanced = []  # enhanced features after prototype query
 
     for batch in tqdm(dataloader, desc="Extracting features with prototype info"):
         imgs = batch['img'].to(device)
@@ -119,6 +119,9 @@ def extract_features_with_prototype_info(model, loss_terms, dataloader, device):
         all_labels.extend(labels.numpy())
         all_cls_names.extend(cls_names)
 
+        if include_anomaly_info and 'anomaly' in batch:
+            all_anomalies.extend(batch['anomaly'].numpy())
+
         # Compute prototype similarities
         if proto_loss.prototypes is not None:
             feats_norm = F.normalize(glo_feats, dim=1, p=2)
@@ -131,6 +134,9 @@ def extract_features_with_prototype_info(model, loss_terms, dataloader, device):
         'labels': np.array(all_labels),
         'cls_names': all_cls_names,
     }
+
+    if include_anomaly_info and all_anomalies:
+        result['anomalies'] = np.array(all_anomalies)
 
     if all_proto_sims:
         result['proto_sims'] = np.concatenate(all_proto_sims, axis=0)
@@ -307,8 +313,22 @@ def plot_feature_prototype_tsne(data, proto_loss, save_path):
 
     for lbl_idx, lbl in enumerate(unique_labels):
         mask = labels == lbl
-        ax.scatter(feats_2d[mask, 0], feats_2d[mask, 1], c=[colors_cls[lbl_idx]],
-                  alpha=0.5, s=15, label=label_to_cls[lbl])
+        
+        # If anomaly info is available, plot normal vs anomaly separately
+        if 'anomalies' in data:
+            anomalies = data['anomalies']
+            mask_normal = mask & (anomalies == 0)
+            mask_anomaly = mask & (anomalies == 1)
+            
+            if mask_normal.sum() > 0:
+                ax.scatter(feats_2d[mask_normal, 0], feats_2d[mask_normal, 1], c=[colors_cls[lbl_idx]],
+                          alpha=0.4, s=15, marker='o', label=f'{label_to_cls[lbl]} (N)')
+            if mask_anomaly.sum() > 0:
+                ax.scatter(feats_2d[mask_anomaly, 0], feats_2d[mask_anomaly, 1], c=[colors_cls[lbl_idx]],
+                          alpha=0.8, s=30, marker='^', edgecolors='black', linewidth=0.5, label=f'{label_to_cls[lbl]} (A)')
+        else:
+            ax.scatter(feats_2d[mask, 0], feats_2d[mask, 1], c=[colors_cls[lbl_idx]],
+                      alpha=0.5, s=15, label=label_to_cls[lbl])
 
     # Plot prototypes as big stars
     proto_colors = plt.cm.Set1(np.linspace(0, 1, n_proto))
@@ -480,6 +500,8 @@ def main():
     parser.add_argument('--split', type=str, default='train', choices=['train', 'test'])
     parser.add_argument('--compute_gradients', action='store_true',
                         help='Compute gradient flow analysis (requires GPU, takes more time)')
+    parser.add_argument('--show_anomaly', action='store_true',
+                        help='Show normal vs anomaly samples with different markers')
     args = parser.parse_args()
 
     os.makedirs(args.save_dir, exist_ok=True)
@@ -526,7 +548,8 @@ def main():
 
     # Extract features with prototype info
     print("\nExtracting features with prototype info...")
-    data = extract_features_with_prototype_info(model, loss_terms, dataloader, device)
+    data = extract_features_with_prototype_info(model, loss_terms, dataloader, device, 
+                                               include_anomaly_info=args.show_anomaly)
 
     # Plot 1: Prototype similarity matrix (orthogonality)
     print("\nGenerating prototype similarity matrix...")
