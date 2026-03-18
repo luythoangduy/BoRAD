@@ -449,7 +449,7 @@ class RDLGC_BYOL(nn.Module):
         # === Feature fusion and decoding ===
         # Use projected features for reconstruction
         mid = self.mff_oce(feats_t_proj)
-        mid_k = self.mff_oce_momentum(feats_t_k_grid)
+        mid_k = self.mff_oce(feats_t_k_grid)
         feats_s = self.net_s(mid)
 
         # === Global features for SCL ===

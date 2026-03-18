@@ -48,18 +48,18 @@ except ImportError:
 
 def load_model_and_loss(config_path, checkpoint_path, device):
     """Load model and reconstruct loss terms (including prototypes)."""
-    if hasattr(get_cfg, '__code__') and get_cfg.__code__.co_varnames[0] == 'opt_terminal':
-        from argparse import Namespace
-        opt = Namespace(
-            cfg_path=config_path, mode='test', data_path=None,
-            sleep=-1, memory=-1, dist_url='env://', logger_rank=0, opts=[]
-        )
-        cfg = get_cfg(opt)
-    else:
-        cfg = get_cfg(config_path)
-
-    # Create model
-    model = MODEL.get_module(cfg.model.name)(**cfg.model.kwargs)
+    class Args:
+        def __init__(self, cfg_path):
+            self.cfg_path = cfg_path
+            self.mode = 'test'
+            self.opts = []
+            self.sleep = -1
+            self.memory = -1
+            self.dist_url = 'env://'
+            self.logger_rank = 0
+            
+    cfg = get_cfg(Args(config_path))
+    model = get_model(cfg.model)
     model = model.to(device)
 
     # Load checkpoint
