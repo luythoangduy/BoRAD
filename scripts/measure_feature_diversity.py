@@ -509,6 +509,97 @@ def main():
             f.write("\n")
     print(f"Saved: {txt_path}")
 
+    # === Angular Distribution Analysis ===
+    # Answer: features at cos_sim ~0.9, are they in the 10% or 90% of angular space?
+    print("\n=== Angular Distribution Analysis ===\n")
+    
+    # Key stages to analyze
+    angular_stages = OrderedDict()
+    angular_stages['Fused (MFF_OCE)'] = fused_feats
+    angular_stages['Global (GAP)'] = global_feats
+    if proto_loss is not None and hasattr(proto_loss, 'prototypes'):
+        protos = proto_loss.prototypes.detach().cpu()
+        angular_stages['Prototypes (global avg)'] = protos.mean(dim=0)
+    
+    n_stages = len(angular_stages)
+    fig, axes_ang = plt.subplots(1, n_stages, figsize=(7 * n_stages, 5))
+    if n_stages == 1:
+        axes_ang = [axes_ang]
+    
+    for ax, (stage_name, feats) in zip(axes_ang, angular_stages.items()):
+        feats_2d = feats
+        if feats_2d.dim() == 4:
+            B, C, H, W = feats_2d.shape
+            feats_2d = feats_2d.permute(0, 2, 3, 1).reshape(-1, C)
+        elif feats_2d.dim() == 3:
+            feats_2d = feats_2d.reshape(-1, feats_2d.shape[-1])
+        
+        # Subsample for pairwise computation
+        N = feats_2d.shape[0]
+        if N > 2000:
+            idx = torch.randperm(N)[:2000]
+            feats_2d = feats_2d[idx]
+            N = 2000
+        
+        feats_norm = F.normalize(feats_2d, dim=-1, p=2)
+        cos_sim = torch.mm(feats_norm, feats_norm.t())
+        
+        # Off-diagonal pairwise cosine similarities
+        mask = ~torch.eye(N, dtype=torch.bool)
+        pairwise_cos = cos_sim[mask].cpu().numpy()
+        
+        # Convert to angles (degrees)
+        pairwise_angles = np.degrees(np.arccos(np.clip(pairwise_cos, -1, 1)))
+        
+        # Stats
+        mean_angle = pairwise_angles.mean()
+        std_angle = pairwise_angles.std()
+        min_angle = pairwise_angles.min()
+        max_angle = pairwise_angles.max()
+        angle_span = max_angle - min_angle
+        
+        # What % of max angular range (180°) is used?
+        span_pct = angle_span / 180.0 * 100
+        
+        # What % of angles fall within ±5° of the mean?
+        within_5 = np.sum(np.abs(pairwise_angles - mean_angle) < 5) / len(pairwise_angles) * 100
+        within_10 = np.sum(np.abs(pairwise_angles - mean_angle) < 10) / len(pairwise_angles) * 100
+        
+        print(f"--- {stage_name} ---")
+        print(f"  Mean angle:  {mean_angle:.1f}° (cos_sim={np.cos(np.radians(mean_angle)):.4f})")
+        print(f"  Std angle:   {std_angle:.1f}°")
+        print(f"  Range:       [{min_angle:.1f}°, {max_angle:.1f}°]")
+        print(f"  Span:        {angle_span:.1f}° = {span_pct:.1f}% of 180°")
+        print(f"  Concentration: {within_5:.1f}% within ±5° of mean, {within_10:.1f}% within ±10°")
+        print()
+        
+        # Histogram
+        ax.hist(pairwise_angles, bins=80, density=True, color='steelblue', alpha=0.7, edgecolor='white')
+        ax.axvline(mean_angle, color='red', linewidth=2, linestyle='--', label=f'Mean={mean_angle:.1f}°')
+        ax.axvline(mean_angle - std_angle, color='orange', linewidth=1, linestyle=':', label=f'±1σ={std_angle:.1f}°')
+        ax.axvline(mean_angle + std_angle, color='orange', linewidth=1, linestyle=':')
+        ax.set_xlabel('Pairwise Angle (degrees)')
+        ax.set_ylabel('Density')
+        ax.set_title(f'{stage_name}\nspan={angle_span:.1f}° ({span_pct:.1f}% of 180°)')
+        ax.legend(fontsize=8)
+        ax.set_xlim(0, 180)
+        
+        # Annotate concentration
+        ax.text(0.98, 0.95,
+                f'{within_5:.0f}% in ±5°\n{within_10:.0f}% in ±10°',
+                transform=ax.transAxes, fontsize=9,
+                verticalalignment='top', horizontalalignment='right',
+                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+    
+    plt.suptitle('Angular Distribution of Pairwise Feature Distances\n'
+                 '(narrow peak = features tightly packed in small region)',
+                 fontsize=13, fontweight='bold')
+    plt.tight_layout()
+    save_path = os.path.join(args.save_dir, 'angular_distribution.png')
+    plt.savefig(save_path, dpi=200, bbox_inches='tight')
+    plt.close()
+    print(f"Saved: {save_path}")
+
 
 if __name__ == '__main__':
     main()
