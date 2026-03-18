@@ -253,6 +253,7 @@ def main():
     proj_feats = [[], [], []]     # 3 scales
     fused_feats = []              # MFF_OCE output
     global_feats = []             # GAP features
+    class_labels = []             # Class names per sample
 
     print(f"Collecting features from {num_samples} samples...")
     for i, idx in enumerate(indices):
@@ -277,6 +278,9 @@ def main():
         # Global
         glo = F.adaptive_avg_pool2d(mid, 1).squeeze()
         global_feats.append(glo.cpu())
+        
+        # Class label
+        class_labels.append(data['cls_name'])
         
         if (i + 1) % 20 == 0:
             print(f"  {i+1}/{num_samples}")
@@ -509,96 +513,131 @@ def main():
             f.write("\n")
     print(f"Saved: {txt_path}")
 
-    # === Angular Distribution Analysis ===
-    # Answer: features at cos_sim ~0.9, are they in the 10% or 90% of angular space?
-    print("\n=== Angular Distribution Analysis ===\n")
+    # === Angular Distribution Analysis (Class-Aware) ===
+    print("\n=== Angular Distribution Analysis (Class-Aware) ===\n")
     
-    # Key stages to analyze
-    angular_stages = OrderedDict()
-    angular_stages['Fused (MFF_OCE)'] = fused_feats
-    angular_stages['Global (GAP)'] = global_feats
-    if proto_loss is not None and hasattr(proto_loss, 'prototypes'):
-        protos = proto_loss.prototypes.detach().cpu()
-        angular_stages['Prototypes (global avg)'] = protos.mean(dim=0)
+    unique_classes = sorted(set(class_labels))
+    label_to_idx = {c: i for i, c in enumerate(unique_classes)}
+    label_ids = np.array([label_to_idx[c] for c in class_labels])  # (num_samples,)
+    print(f"  Classes: {unique_classes}")
+    print(f"  Samples per class: {', '.join(f'{c}={np.sum(label_ids==i)}' for c, i in label_to_idx.items())}")
     
-    n_stages = len(angular_stages)
-    fig, axes_ang = plt.subplots(1, n_stages, figsize=(7 * n_stages, 5))
-    if n_stages == 1:
-        axes_ang = [axes_ang]
+    # Stages to analyze with class info (only per-sample features, not spatial)
+    class_stages = OrderedDict()
+    class_stages['Global (GAP)'] = global_feats  # (N, C)
     
-    for ax, (stage_name, feats) in zip(axes_ang, angular_stages.items()):
+    # Also add Fused but GAP'd per sample for fair comparison
+    fused_gap = F.adaptive_avg_pool2d(fused_feats, 1).squeeze()  # (N, C)
+    class_stages['Fused (GAP)'] = fused_gap
+    
+    for stage_name, feats in class_stages.items():
         feats_2d = feats
-        if feats_2d.dim() == 4:
-            B, C, H, W = feats_2d.shape
-            feats_2d = feats_2d.permute(0, 2, 3, 1).reshape(-1, C)
-        elif feats_2d.dim() == 3:
-            feats_2d = feats_2d.reshape(-1, feats_2d.shape[-1])
+        if feats_2d.dim() > 2:
+            feats_2d = feats_2d.reshape(feats_2d.shape[0], -1)
         
-        # Subsample for pairwise computation
         N = feats_2d.shape[0]
-        if N > 2000:
-            idx = torch.randperm(N)[:2000]
-            feats_2d = feats_2d[idx]
-            N = 2000
-        
         feats_norm = F.normalize(feats_2d, dim=-1, p=2)
-        cos_sim = torch.mm(feats_norm, feats_norm.t())
+        cos_sim_mat = torch.mm(feats_norm, feats_norm.t()).cpu().numpy()  # (N, N)
         
-        # Off-diagonal pairwise cosine similarities
-        mask = ~torch.eye(N, dtype=torch.bool)
-        pairwise_cos = cos_sim[mask].cpu().numpy()
+        # Build intra/inter class masks
+        label_mat_same = label_ids[:, None] == label_ids[None, :]  # (N, N)
+        diag_mask = ~np.eye(N, dtype=bool)
         
-        # Convert to angles (degrees)
-        pairwise_angles = np.degrees(np.arccos(np.clip(pairwise_cos, -1, 1)))
+        intra_mask = label_mat_same & diag_mask  # same class, not self
+        inter_mask = ~label_mat_same & diag_mask  # different class
         
-        # Stats
-        mean_angle = pairwise_angles.mean()
-        std_angle = pairwise_angles.std()
-        min_angle = pairwise_angles.min()
-        max_angle = pairwise_angles.max()
-        angle_span = max_angle - min_angle
+        intra_cos = cos_sim_mat[intra_mask]
+        inter_cos = cos_sim_mat[inter_mask]
         
-        # What % of max angular range (180°) is used?
-        span_pct = angle_span / 180.0 * 100
+        intra_angles = np.degrees(np.arccos(np.clip(intra_cos, -1, 1)))
+        inter_angles = np.degrees(np.arccos(np.clip(inter_cos, -1, 1)))
+        all_angles = np.degrees(np.arccos(np.clip(cos_sim_mat[diag_mask], -1, 1)))
         
-        # What % of angles fall within ±5° of the mean?
-        within_5 = np.sum(np.abs(pairwise_angles - mean_angle) < 5) / len(pairwise_angles) * 100
-        within_10 = np.sum(np.abs(pairwise_angles - mean_angle) < 10) / len(pairwise_angles) * 100
+        print(f"\n--- {stage_name} ---")
+        print(f"  Intra-class:  mean={intra_angles.mean():.1f}°  std={intra_angles.std():.1f}°  "
+              f"(cos_sim={intra_cos.mean():.4f})  n={len(intra_angles)}")
+        print(f"  Inter-class:  mean={inter_angles.mean():.1f}°  std={inter_angles.std():.1f}°  "
+              f"(cos_sim={inter_cos.mean():.4f})  n={len(inter_angles)}")
+        print(f"  Separation:   {inter_angles.mean() - intra_angles.mean():.1f}° gap")
         
-        print(f"--- {stage_name} ---")
-        print(f"  Mean angle:  {mean_angle:.1f}° (cos_sim={np.cos(np.radians(mean_angle)):.4f})")
-        print(f"  Std angle:   {std_angle:.1f}°")
-        print(f"  Range:       [{min_angle:.1f}°, {max_angle:.1f}°]")
-        print(f"  Span:        {angle_span:.1f}° = {span_pct:.1f}% of 180°")
-        print(f"  Concentration: {within_5:.1f}% within ±5° of mean, {within_10:.1f}% within ±10°")
-        print()
+        # Per-class intra stats
+        print(f"  Per-class intra-class angles:")
+        for cls_name, cls_id in label_to_idx.items():
+            cls_mask = label_ids == cls_id
+            n_cls = cls_mask.sum()
+            if n_cls < 2:
+                continue
+            cls_feats = feats_norm[cls_mask]
+            cls_cos = torch.mm(cls_feats, cls_feats.t()).cpu().numpy()
+            cls_diag = ~np.eye(n_cls, dtype=bool)
+            cls_angles = np.degrees(np.arccos(np.clip(cls_cos[cls_diag], -1, 1)))
+            print(f"    {cls_name:>20s}: mean={cls_angles.mean():.1f}°  "
+                  f"std={cls_angles.std():.1f}°  (cos={cls_cos[cls_diag].mean():.3f})  n={n_cls}")
+    
+    # === Plot: class-aware angular distribution ===
+    n_stages = len(class_stages)
+    fig, axes_ang = plt.subplots(2, n_stages, figsize=(8 * n_stages, 10))
+    if n_stages == 1:
+        axes_ang = axes_ang.reshape(-1, 1)
+    
+    for col, (stage_name, feats) in enumerate(class_stages.items()):
+        feats_2d = feats
+        if feats_2d.dim() > 2:
+            feats_2d = feats_2d.reshape(feats_2d.shape[0], -1)
         
-        # Histogram
-        ax.hist(pairwise_angles, bins=80, density=True, color='steelblue', alpha=0.7, edgecolor='white')
-        ax.axvline(mean_angle, color='red', linewidth=2, linestyle='--', label=f'Mean={mean_angle:.1f}°')
-        ax.axvline(mean_angle - std_angle, color='orange', linewidth=1, linestyle=':', label=f'±1σ={std_angle:.1f}°')
-        ax.axvline(mean_angle + std_angle, color='orange', linewidth=1, linestyle=':')
+        N = feats_2d.shape[0]
+        feats_norm = F.normalize(feats_2d, dim=-1, p=2)
+        cos_sim_mat = torch.mm(feats_norm, feats_norm.t()).cpu().numpy()
+        
+        label_mat_same = label_ids[:, None] == label_ids[None, :]
+        diag_mask = ~np.eye(N, dtype=bool)
+        intra_mask = label_mat_same & diag_mask
+        inter_mask = ~label_mat_same & diag_mask
+        
+        intra_angles = np.degrees(np.arccos(np.clip(cos_sim_mat[intra_mask], -1, 1)))
+        inter_angles = np.degrees(np.arccos(np.clip(cos_sim_mat[inter_mask], -1, 1)))
+        all_angles = np.degrees(np.arccos(np.clip(cos_sim_mat[diag_mask], -1, 1)))
+        
+        # Row 0: All + Intra + Inter overlaid
+        ax = axes_ang[0, col]
+        ax.hist(all_angles, bins=80, density=True, color='gray', alpha=0.3, label='All')
+        ax.hist(intra_angles, bins=80, density=True, color='dodgerblue', alpha=0.6, label=f'Intra-class ({intra_angles.mean():.1f}°)')
+        ax.hist(inter_angles, bins=80, density=True, color='tomato', alpha=0.6, label=f'Inter-class ({inter_angles.mean():.1f}°)')
+        gap = inter_angles.mean() - intra_angles.mean()
+        ax.set_title(f'{stage_name}\nIntra vs Inter (gap={gap:.1f}°)', fontsize=11)
         ax.set_xlabel('Pairwise Angle (degrees)')
         ax.set_ylabel('Density')
-        ax.set_title(f'{stage_name}\nspan={angle_span:.1f}° ({span_pct:.1f}% of 180°)')
         ax.legend(fontsize=8)
         ax.set_xlim(0, 180)
         
-        # Annotate concentration
-        ax.text(0.98, 0.95,
-                f'{within_5:.0f}% in ±5°\n{within_10:.0f}% in ±10°',
-                transform=ax.transAxes, fontsize=9,
-                verticalalignment='top', horizontalalignment='right',
-                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+        # Row 1: Per-class intra distributions
+        ax = axes_ang[1, col]
+        colors = plt.cm.tab20(np.linspace(0, 1, len(unique_classes)))
+        for cls_name, cls_id in label_to_idx.items():
+            cls_mask = label_ids == cls_id
+            n_cls = cls_mask.sum()
+            if n_cls < 2:
+                continue
+            cls_feats = feats_norm[cls_mask]
+            cls_cos = torch.mm(cls_feats, cls_feats.t()).cpu().numpy()
+            cls_diag = ~np.eye(n_cls, dtype=bool)
+            cls_angles = np.degrees(np.arccos(np.clip(cls_cos[cls_diag], -1, 1)))
+            ax.hist(cls_angles, bins=40, density=True, alpha=0.4,
+                    color=colors[cls_id], label=f'{cls_name} ({cls_angles.mean():.0f}°)')
+        ax.set_title(f'{stage_name}\nPer-Class Intra Distributions', fontsize=11)
+        ax.set_xlabel('Pairwise Angle (degrees)')
+        ax.set_ylabel('Density')
+        ax.legend(fontsize=7, ncol=2, loc='upper right')
+        ax.set_xlim(0, 180)
     
-    plt.suptitle('Angular Distribution of Pairwise Feature Distances\n'
-                 '(narrow peak = features tightly packed in small region)',
+    plt.suptitle('Class-Aware Angular Distribution\n'
+                 '(blue=intra-class should be small, red=inter-class should be large)',
                  fontsize=13, fontweight='bold')
     plt.tight_layout()
-    save_path = os.path.join(args.save_dir, 'angular_distribution.png')
+    save_path = os.path.join(args.save_dir, 'angular_distribution_class_aware.png')
     plt.savefig(save_path, dpi=200, bbox_inches='tight')
     plt.close()
-    print(f"Saved: {save_path}")
+    print(f"\nSaved: {save_path}")
 
 
 if __name__ == '__main__':
