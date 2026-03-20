@@ -47,7 +47,7 @@ from timm.utils import dispatch_clip_grad
 
 from ._base_trainer import BaseTrainer
 from . import TRAINER
-from util.vis import vis_rgb_gt_amp, read_data, save_data, vis_feature_mean
+from util.vis import vis_rgb_gt_amp, read_data, save_data, vis_feature_channels
 from util.bank import MemoryBank
 import torch.nn.functional as F
 
@@ -314,7 +314,7 @@ class RDLGCBYOLTrainer(BaseTrainer):
                     self.cfg.model.name, root_out,
                     self.cfg.data.root.split('/')[1]
                 )
-                vis_feature_mean(self.img_path, self.feats_t, self.feats_s, self.cfg.model.name, root_out)
+                vis_feature_channels(self.img_path, self.feats_t, self.feats_s, self.cfg.model.name, root_out)
 
             # Accumulate results in RAM (no disk I/O)
             imgs_masks.append(self.imgs_mask.cpu().numpy().astype(int))
