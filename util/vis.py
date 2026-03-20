@@ -66,22 +66,27 @@ def vis_feature_channels(img_paths, feats_t, feats_s, method, root_out, n_channe
             t_ch = ft_map[idx, ch]
             s_ch = fs_map[idx, ch]
 
+            # Use Teacher min/max for normalization
+            t_min, t_max = t_ch.min(), t_ch.max()
+
             t_save_path = f'{out_dir}/{img_num}_feat_t_ch{ch}.png'
             s_save_path = f'{out_dir}/{img_num}_feat_s_ch{ch}.png'
 
-            def process_ch(m):
+            def process_ch(m, m_min, m_max):
                 m = m.cpu().numpy()
-                # Normalize individual channel
-                m_min, m_max = m.min(), m.max()
+                m_min = m_min.cpu().numpy()
+                m_max = m_max.cpu().numpy()
+                # Normalize using teacher's min/max
                 m = (m - m_min) / (m_max - m_min + 1e-8)
+                m = np.clip(m, 0, 1)  # Ensure within [0, 1] range
                 m = (m * 255).astype(np.uint8)
                 m = cv2.applyColorMap(m, cv2.COLORMAP_JET)
                 m = cv2.cvtColor(m, cv2.COLOR_BGR2RGB)
                 m = Image.fromarray(m).resize((256, 256), Image.BILINEAR)
                 return m
 
-            process_ch(t_ch).save(t_save_path)
-            process_ch(s_ch).save(s_save_path)
+            process_ch(t_ch, t_min, t_max).save(t_save_path)
+            process_ch(s_ch, t_min, t_max).save(s_save_path)
 
 
 def save_vis_rgb(save_path, img_path, imgs, save_name):
