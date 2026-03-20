@@ -45,6 +45,45 @@ def vis_rgb_gt_amp(img_paths, imgs, img_masks, anomaly_maps, method, root_out, d
         img_mask.save(mask_path)
 
 
+def vis_feature_mean(img_paths, feats_t, feats_s, method, root_out):
+    """
+    Visualize channel-averaged feature maps at Scale 1 for encoder and decoder.
+    """
+    # Scale 1 is index 0 for both RDLGC and RDLGC_BYOL
+    # Shape: (B, C, H, W)
+    ft_map = feats_t[0].detach()
+    fs_map = feats_s[0].detach()
+
+    # Compute mean across channels -> (B, H, W)
+    ft_mean = ft_map.mean(dim=1)
+    fs_mean = fs_map.mean(dim=1)
+
+    for idx, (img_path, t_mean, s_mean) in enumerate(zip(img_paths, ft_mean, fs_mean)):
+        parts = img_path.split('/')
+        needed_parts = parts[1:-1]
+        specific_root = '/'.join(needed_parts)
+        img_num = parts[-1].split('.')[0]
+
+        out_dir = f'{root_out}/{method}/{specific_root}'
+        os.makedirs(out_dir, exist_ok=True)
+        
+        t_save_path = f'{out_dir}/{img_num}_feat_t.png'
+        s_save_path = f'{out_dir}/{img_num}_feat_s.png'
+
+        # Normalize and convert to heatmap-like visualization
+        def process_mean_map(m):
+            m = m.cpu().numpy()
+            m = (m - m.min()) / (m.max() - m.min() + 1e-8)
+            m = (m * 255).astype(np.uint8)
+            m = cv2.applyColorMap(m, cv2.COLORMAP_JET)
+            m = cv2.cvtColor(m, cv2.COLOR_BGR2RGB)
+            m = Image.fromarray(m).resize((256, 256), Image.BILINEAR)
+            return m
+
+        process_mean_map(t_mean).save(t_save_path)
+        process_mean_map(s_mean).save(s_save_path)
+
+
 def save_vis_rgb(save_path, img_path, imgs, save_name):
     mean = torch.tensor([0.485, 0.456, 0.406], device=imgs.device)
     std = torch.tensor([0.229, 0.224, 0.225], device=imgs.device)

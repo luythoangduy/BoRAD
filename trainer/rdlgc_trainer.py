@@ -32,7 +32,7 @@ from timm.utils import dispatch_clip_grad
 
 from ._base_trainer import BaseTrainer
 from . import TRAINER
-from util.vis import vis_rgb_gt_amp, read_data, save_data
+from util.vis import vis_rgb_gt_amp, read_data, save_data, vis_feature_mean
 from util.bank import MemoryBank
 import torch.nn.functional as F
 
@@ -166,6 +166,7 @@ class RDLGCTrainer(BaseTrainer):
                     root_out = self.writer.logdir
                 vis_rgb_gt_amp(self.img_path, self.imgs, self.imgs_mask.cpu().numpy().astype(int), anomaly_map,
                                self.cfg.model.name, root_out, self.cfg.data.root.split('/')[1])
+                vis_feature_mean(self.img_path, self.feats_t, self.feats_s, self.cfg.model.name, root_out)
             save_path = os.path.join(self.cfg.logdir, 'results')
             save_data(save_path, self.cls_name, self.img_path, self.imgs_mask.cpu().numpy().astype(int), anomaly_map,
                       self.anomaly.cpu().numpy().astype(int))
