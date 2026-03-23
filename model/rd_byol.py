@@ -472,7 +472,7 @@ class RDLGC_BYOL(nn.Module):
         feats = self.proj_layer(feats_t_detached)
         mid = self.mff_oce(feats)
         feats_s = self.net_s(mid)
-        return feats_t_detached, feats_s, None, None, None, None
+        return feats_t_detached, feats_s, None, None, mid, None
 
 
 # ============================================================================

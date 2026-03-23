@@ -204,3 +204,11 @@ class cfg(cfg_common, cfg_dataset_default, cfg_model_rd):
             dict(name='batch_t', fmt=':>5.3f', add_name='avg'),
             dict(name='cos', suffixes=[''], fmt=':>5.3f', add_name='avg'),
         ]
+
+        # ==> WandB logging
+        self.wandb.enabled = True
+        self.wandb.project = 'BoRAD'
+        self.wandb.name = None  # Auto-generated: {model}_{dataset}
+        self.wandb.tags = ['mvtec', 'byol', 'prototype']
+        self.wandb.notes = 'RDLGC-BYOL with prototype loss on MVTec'
+        self.wandb.log_interval = 1  # Log every iteration
