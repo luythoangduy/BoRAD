@@ -428,6 +428,11 @@ class PrototypeBYOLLoss(nn.Module):
         diagnostics['loss_case_opposite'] = per_proto_loss[is_diff].mean().item() if n_diff > 0 else 0.0
         diagnostics['n_pairs_same'] = n_same
         diagnostics['n_pairs_opposite'] = n_diff
+        
+        # Add raw dot_sign stats for debugging why is_diff is 0
+        diagnostics['dot_sign_max'] = dot_sign.max().item()
+        diagnostics['dot_sign_min'] = dot_sign.min().item()
+        diagnostics['dot_sign_mean'] = dot_sign.mean().item()
 
         return diagnostics
 

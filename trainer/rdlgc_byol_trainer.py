@@ -340,7 +340,9 @@ class RDLGCBYOLTrainer(BaseTrainer):
                     f"case_opp: {proto_diagnostics['case_opposite_ratio']:.2%} "
                     f"(loss={proto_diagnostics['loss_case_opposite']:.4f}), "
                     f"case_same: {proto_diagnostics['case_same_ratio']:.2%} "
-                    f"(loss={proto_diagnostics['loss_case_same']:.4f})")
+                    f"(loss={proto_diagnostics['loss_case_same']:.4f}) | "
+                    f"dot_range: [{proto_diagnostics['dot_sign_min']:.4f}, {proto_diagnostics['dot_sign_max']:.4f}]"
+                )
 
 
     @torch.no_grad()
