@@ -258,7 +258,7 @@ class PrototypeBYOLLoss(nn.Module):
         W: Feature map width (REQUIRED to init spatial parameters)
     """
 
-    def __init__(self, lam=1.0, n_prototypes=7, feat_dim=2048, H=8, W=8, lam_spatial=1.0, lam_global=1.0):
+    def __init__(self, lam=1.0, n_prototypes=7, feat_dim=2048, H=8, W=8, lam_spatial=1.0, lam_global=1.0, lam_align=0.1):
         super(PrototypeBYOLLoss, self).__init__()
         self.lam = lam
         self.n_prototypes = n_prototypes
@@ -267,6 +267,7 @@ class PrototypeBYOLLoss(nn.Module):
         self.W = W
         self.lam_spatial = lam_spatial
         self.lam_global = lam_global
+        self.lam_align = lam_align
 
         # === Prototypes (learnable, orthonormal init) ===
         # Shape: (H*W, n_prototypes, feat_dim)
@@ -315,8 +316,12 @@ class PrototypeBYOLLoss(nn.Module):
         # We mean-pool across spatial locations to get global prototypes
         global_prototypes = self.prototypes.mean(dim=0)  # (N, C)
         prototypes_norm = F.normalize(global_prototypes, dim=1, p=2)  # (N, C)
+        
+        # Normalize features to unit sphere before shift
+        features_norm = F.normalize(features, dim=1, p=2)  # (B, C)
+        
         # Shift: features (B, 1, C) - prototypes (1, N, C) = (B, N, C)
-        shifted = features.unsqueeze(1) - prototypes_norm.unsqueeze(0)
+        shifted = features_norm.unsqueeze(1) - prototypes_norm.unsqueeze(0)
         return shifted
 
     def query_prototypes(self, spatial_feats):
@@ -491,15 +496,32 @@ class PrototypeBYOLLoss(nn.Module):
         loss_global = per_proto_loss.mean()
 
         # ==========================================
-        # 3. DIAGNOSTICS (no grad, no overhead on backward)
+        # 3. PROTOTYPE ALIGNMENT LOSS (Pull prototypes to features)
+        # ==========================================
+        # glo_feats: (B, C), global_prototypes: (N, C)
+        glo_feats_norm = F.normalize(glo_feats, dim=1, p=2)
+        global_prototypes = self.prototypes.mean(dim=0)  # (N, C)
+        prototypes_norm = F.normalize(global_prototypes, dim=1, p=2)
+        
+        # Max cosine similarity for each sample with its nearest prototype
+        sims = torch.mm(glo_feats_norm, prototypes_norm.t())  # (B, N)
+        max_sims = sims.max(dim=1).values
+        loss_align = 1.0 - max_sims.mean()
+
+        # ==========================================
+        # 4. DIAGNOSTICS (no grad, no overhead on backward)
         # ==========================================
         diagnostics = self.compute_diagnostics(
             per_proto_loss.detach(), glo_feats.detach(), glo_feats_k.detach()
         )
+        diagnostics['max_cos_sim_mean'] = max_sims.detach().mean().item()
+        diagnostics['loss_align'] = loss_align.detach().item()
 
         # ==========================================
-        # 4. TOTAL LOSS
+        # 5. FINAL COMBINATION
         # ==========================================
-        total_loss = self.lam_spatial * loss_spatial + self.lam_global * loss_global
-
+        total_loss = self.lam_spatial * loss_spatial + \
+                     self.lam_global * loss_global + \
+                     self.lam_align * loss_align
+        
         return total_loss * self.lam, diagnostics

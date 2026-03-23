@@ -186,7 +186,7 @@ class cfg(cfg_common, cfg_dataset_default, cfg_model_rd):
             # Dense BYOL: local features with spatial matching
             # dict(type='BYOLDenseLoss', name='dense', lam=2.0, use_spatial_matching=False),
             # Prototype InfoNCE: global features with prototype learning
-            dict(type='PrototypeBYOLLoss', name='proto', lam=1.0, n_prototypes=7, feat_dim=2048, lam_spatial=1.0, lam_global=1.0),
+            dict(type='PrototypeBYOLLoss', name='proto', lam=1.0, n_prototypes=7, feat_dim=2048, lam_spatial=1.0, lam_global=1.0, lam_align=0.1),
         ]
 
 
