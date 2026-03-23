@@ -195,8 +195,9 @@ class RDLGCBYOLTrainer(BaseTrainer):
 
             # === Prototype InfoNCE loss (optional) ===
             loss_glb = None
+            proto_diagnostics = None
             if 'proto' in self.loss_terms:
-                loss_glb = self.loss_terms['proto'](self.glb_feats, self.glb_feats_k,self.mid,self.mid_k, self.labels)
+                loss_glb, proto_diagnostics = self.loss_terms['proto'](self.glb_feats, self.glb_feats_k,self.mid,self.mid_k, self.labels)
                 loss = loss + loss_glb
             
             # === BYOL Dense loss (optional) ===
@@ -211,10 +212,37 @@ class RDLGCBYOLTrainer(BaseTrainer):
                 )
                 loss = loss + loss_den
 
-        self.backward_term(loss, self.optim)
+        # === Backward pass (compute gradients) ===
+        self.optim.proj_opt.zero_grad()
+        self.optim.distill_opt.zero_grad()
+        if self.optim.proto_opt is not None:
+            self.optim.proto_opt.zero_grad()
+
+        loss.backward(retain_graph=self.cfg.loss.retain_graph)
+        if self.cfg.loss.clip_grad is not None:
+            dispatch_clip_grad(self.net.parameters(), value=self.cfg.loss.clip_grad)
+
+        # === Gradient magnitude logging (AFTER backward, BEFORE step) ===
+        net_module = self.net.module if hasattr(self.net, 'module') else self.net
+        grad_proj_norm = 0.0
+        grad_mff_norm = 0.0
+        for p in net_module.proj_layer.parameters():
+            if p.grad is not None:
+                grad_proj_norm += p.grad.data.norm(2).item() ** 2
+        grad_proj_norm = grad_proj_norm ** 0.5
+
+        for p in net_module.mff_oce.parameters():
+            if p.grad is not None:
+                grad_mff_norm += p.grad.data.norm(2).item() ** 2
+        grad_mff_norm = grad_mff_norm ** 0.5
+
+        # === Optimizer step ===
+        self.optim.proj_opt.step()
+        self.optim.distill_opt.step()
+        if self.optim.proto_opt is not None:
+            self.optim.proto_opt.step()
 
         # === CRITICAL: Update momentum encoder after each step ===
-        net_module = self.net.module if hasattr(self.net, 'module') else self.net
         if hasattr(net_module, 'update_momentum_encoder'):
             net_module.update_momentum_encoder()
 
@@ -253,14 +281,39 @@ class RDLGCBYOLTrainer(BaseTrainer):
                 current_momentum = current_momentum.item()
             log_dict['train/momentum'] = current_momentum
 
+            # === Gradient magnitude ===
+            log_dict['grad/proj_layer_grad_norm'] = grad_proj_norm
+            log_dict['grad/mff_oce_grad_norm'] = grad_mff_norm
+
+            # === Prototype diagnostics ===
+            if proto_diagnostics is not None:
+                log_dict['proto/cosine_sim_mean'] = proto_diagnostics['cosine_sim_mean']
+                log_dict['proto/cosine_sim_max'] = proto_diagnostics['cosine_sim_max']
+                log_dict['proto/cosine_sim_min'] = proto_diagnostics['cosine_sim_min']
+                log_dict['proto/case_opposite_ratio'] = proto_diagnostics['case_opposite_ratio']
+                log_dict['proto/case_same_ratio'] = proto_diagnostics['case_same_ratio']
+                log_dict['proto/loss_case_opposite'] = proto_diagnostics['loss_case_opposite']
+                log_dict['proto/loss_case_same'] = proto_diagnostics['loss_case_same']
+                log_dict['proto/n_pairs_opposite'] = proto_diagnostics['n_pairs_opposite']
+                log_dict['proto/n_pairs_same'] = proto_diagnostics['n_pairs_same']
+
             wandb.log(log_dict, step=self.iter)
 
-        # Log momentum value periodically
+        # Log momentum + diagnostics periodically to console
         if self.iter % 100 == 0 and self.master:
             current_momentum = net_module.get_current_momentum()
             if isinstance(current_momentum, torch.Tensor):
                 current_momentum = current_momentum.item()
             log_msg(self.logger, f"[BYOL] Step {self.iter}, Momentum: {current_momentum:.4f}")
+            log_msg(self.logger, f"[Grad] proj_layer: {grad_proj_norm:.4f}, mff_oce: {grad_mff_norm:.4f}")
+            if proto_diagnostics is not None:
+                log_msg(self.logger, 
+                    f"[Proto] cos_sim_mean: {proto_diagnostics['cosine_sim_mean']:.4f}, "
+                    f"cos_sim_max: {proto_diagnostics['cosine_sim_max']:.4f} | "
+                    f"case_opp: {proto_diagnostics['case_opposite_ratio']:.2%} "
+                    f"(loss={proto_diagnostics['loss_case_opposite']:.4f}), "
+                    f"case_same: {proto_diagnostics['case_same_ratio']:.2%} "
+                    f"(loss={proto_diagnostics['loss_case_same']:.4f})")
 
     @torch.no_grad()
     def test(self):

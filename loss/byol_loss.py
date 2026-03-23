@@ -355,6 +355,85 @@ class PrototypeBYOLLoss(nn.Module):
 
         return merged
 
+    @torch.no_grad()
+    def compute_diagnostics(self, per_proto_loss):
+        """
+        Compute diagnostic metrics for prototype monitoring.
+
+        Returns dict with:
+        - cosine_sim_mean: mean off-diagonal cosine similarity between global prototypes
+        - cosine_sim_max: max off-diagonal cosine similarity
+        - case_opposite_ratio: % prototypes on opposite side of O w.r.t. hyperplane
+        - case_same_ratio: % prototypes on same side of O w.r.t. hyperplane
+        - loss_case_opposite: mean per-proto loss for opposite-side case
+        - loss_case_same: mean per-proto loss for same-side case
+        """
+        diagnostics = {}
+
+        # === 1. Pairwise cosine similarity between global prototypes ===
+        # global_prototypes: (N, C)
+        global_prototypes = self.prototypes.mean(dim=0)  # (N, C)
+        proto_norm = F.normalize(global_prototypes, dim=1, p=2)  # (N, C)
+        cos_matrix = torch.mm(proto_norm, proto_norm.t())  # (N, N)
+
+        N = cos_matrix.shape[0]
+        # Mask out diagonal
+        mask = ~torch.eye(N, dtype=torch.bool, device=cos_matrix.device)
+        off_diag = cos_matrix[mask]
+
+        diagnostics['cosine_sim_mean'] = off_diag.mean().item()
+        diagnostics['cosine_sim_max'] = off_diag.max().item()
+        diagnostics['cosine_sim_min'] = off_diag.min().item()
+
+        # === 2. Hyperplane case analysis ===
+        # For each prototype p_i, hyperplane H_i is perpendicular to p_i, passing through p_i
+        # O always on negative side: dot(-p_i, normalize(p_i)) = -||p_i|| < 0
+        # Check p_j: sign(dot(p_j - p_i, normalize(p_i)))
+        #   > 0 → opposite side from O (case 1, stronger gradient)
+        #   ≤ 0 → same side as O (case 2, weaker gradient)
+
+        n_opposite = 0
+        n_same = 0
+        loss_opposite_sum = 0.0
+        loss_same_sum = 0.0
+        count_opposite = 0
+        count_same = 0
+
+        # per_proto_loss: (B, N) — mean over batch for each prototype
+        mean_per_proto_loss = per_proto_loss.mean(dim=0)  # (N,)
+
+        for i in range(N):
+            p_i = global_prototypes[i]  # (C,)
+            n_i = F.normalize(p_i.unsqueeze(0), dim=1, p=2).squeeze(0)  # (C,)
+
+            for j in range(N):
+                if i == j:
+                    continue
+                p_j = global_prototypes[j]  # (C,)
+                # Check which side p_j is on
+                dot_val = torch.dot(p_j - p_i, n_i)
+
+                if dot_val.item() > 0:
+                    # Case 1: opposite side from O
+                    n_opposite += 1
+                    loss_opposite_sum += mean_per_proto_loss[i].item()
+                    count_opposite += 1
+                else:
+                    # Case 2: same side as O
+                    n_same += 1
+                    loss_same_sum += mean_per_proto_loss[i].item()
+                    count_same += 1
+
+        total_pairs = n_opposite + n_same
+        diagnostics['case_opposite_ratio'] = n_opposite / max(total_pairs, 1)
+        diagnostics['case_same_ratio'] = n_same / max(total_pairs, 1)
+        diagnostics['loss_case_opposite'] = loss_opposite_sum / max(count_opposite, 1)
+        diagnostics['loss_case_same'] = loss_same_sum / max(count_same, 1)
+        diagnostics['n_pairs_opposite'] = n_opposite
+        diagnostics['n_pairs_same'] = n_same
+
+        return diagnostics
+
     def forward(self, glo_feats, glo_feats_k, spatial_feats, spatial_feats_k, labels=None):
         """
         Compute Spatial Prototype BYOL loss + Global BYOL loss.
@@ -365,6 +444,10 @@ class PrototypeBYOLLoss(nn.Module):
             spatial_feats: Online dense features before GAP (B, C, H, W)
             spatial_feats_k: Target dense features before GAP (B, C, H, W)
             labels: Class labels (optional, not used)
+
+        Returns:
+            total_loss: scalar loss
+            diagnostics: dict with prototype monitoring metrics (detached, no grad)
         """
         # ==========================================
         # 1. SPATIAL PROTOTYPE BYOL (on spatial_feats)
@@ -406,8 +489,13 @@ class PrototypeBYOLLoss(nn.Module):
         loss_global = per_proto_loss.mean()
 
         # ==========================================
-        # 3. TOTAL LOSS
+        # 3. DIAGNOSTICS (no grad, no overhead on backward)
+        # ==========================================
+        diagnostics = self.compute_diagnostics(per_proto_loss.detach())
+
+        # ==========================================
+        # 4. TOTAL LOSS
         # ==========================================
         total_loss = self.lam_spatial * loss_spatial + self.lam_global * loss_global
 
-        return total_loss * self.lam
+        return total_loss * self.lam, diagnostics
