@@ -356,28 +356,30 @@ class PrototypeBYOLLoss(nn.Module):
         return merged
 
     @torch.no_grad()
-    def compute_diagnostics(self, per_proto_loss):
+    def compute_diagnostics(self, per_proto_loss, glo_feats, glo_feats_k):
         """
         Compute diagnostic metrics for prototype monitoring.
 
-        Returns dict with:
-        - cosine_sim_mean: mean off-diagonal cosine similarity between global prototypes
-        - cosine_sim_max: max off-diagonal cosine similarity
-        - case_opposite_ratio: % prototypes on opposite side of O w.r.t. hyperplane
-        - case_same_ratio: % prototypes on same side of O w.r.t. hyperplane
-        - loss_case_opposite: mean per-proto loss for opposite-side case
-        - loss_case_same: mean per-proto loss for same-side case
+        Hyperplane geometry:
+        - Normalize f_q, f_k, prototypes → all on unit sphere
+        - f_q and f_k span a 2D plane through origin
+        - Hyperplane H passes through f_q and f_k, perpendicular to this 2D plane
+        - H's normal lies IN the 2D plane, perpendicular to (f_k - f_q)
+        - Check if O (origin) and each prototype are same/different side of H
+
+        Args:
+            per_proto_loss: (B, N) per-prototype loss values
+            glo_feats: (B, C) online global features
+            glo_feats_k: (B, C) target global features
         """
         diagnostics = {}
 
         # === 1. Pairwise cosine similarity between global prototypes ===
-        # global_prototypes: (N, C)
         global_prototypes = self.prototypes.mean(dim=0)  # (N, C)
         proto_norm = F.normalize(global_prototypes, dim=1, p=2)  # (N, C)
         cos_matrix = torch.mm(proto_norm, proto_norm.t())  # (N, N)
 
         N = cos_matrix.shape[0]
-        # Mask out diagonal
         mask = ~torch.eye(N, dtype=torch.bool, device=cos_matrix.device)
         off_diag = cos_matrix[mask]
 
@@ -386,51 +388,46 @@ class PrototypeBYOLLoss(nn.Module):
         diagnostics['cosine_sim_min'] = off_diag.min().item()
 
         # === 2. Hyperplane case analysis ===
-        # For each prototype p_i, hyperplane H_i is perpendicular to p_i, passing through p_i
-        # O always on negative side: dot(-p_i, normalize(p_i)) = -||p_i|| < 0
-        # Check p_j: sign(dot(p_j - p_i, normalize(p_i)))
-        #   > 0 → opposite side from O (case 1, stronger gradient)
-        #   ≤ 0 → same side as O (case 2, weaker gradient)
+        # All on unit sphere
+        B, C = glo_feats.shape
+        f_q = F.normalize(glo_feats, dim=1, p=2)    # (B, C)
+        f_k = F.normalize(glo_feats_k, dim=1, p=2)  # (B, C)
+        # proto_norm: (N, C) already normalized
 
-        n_opposite = 0
-        n_same = 0
-        loss_opposite_sum = 0.0
-        loss_same_sum = 0.0
-        count_opposite = 0
-        count_same = 0
+        # Direction along positive pair (within 2D plane)
+        d = f_k - f_q  # (B, C)
+        d_dot_d = (d * d).sum(dim=-1, keepdim=True).clamp(min=1e-10)  # (B, 1)
 
-        # per_proto_loss: (B, N) — mean over batch for each prototype
-        mean_per_proto_loss = per_proto_loss.mean(dim=0)  # (N,)
+        # For O = (0,...,0):  v_O = O - f_q = -f_q
+        v_O = -f_q  # (B, C)
+        proj_coeff_O = (v_O * d).sum(dim=-1, keepdim=True) / d_dot_d  # (B, 1)
+        perp_O = v_O - proj_coeff_O * d  # (B, C) — component ⊥ d, lies in 2D plane
 
-        for i in range(N):
-            p_i = global_prototypes[i]  # (C,)
-            n_i = F.normalize(p_i.unsqueeze(0), dim=1, p=2).squeeze(0)  # (C,)
+        # For each prototype p_i:  v_p = p_i - f_q
+        # (B, 1, C) - (1, N, C) → (B, N, C)
+        v_p = proto_norm.unsqueeze(0) - f_q.unsqueeze(1)  # (B, N, C)
+        d_exp = d.unsqueeze(1)  # (B, 1, C)
+        d_dot_d_exp = d_dot_d.unsqueeze(1)  # (B, 1, 1)
+        proj_coeff_p = (v_p * d_exp).sum(dim=-1, keepdim=True) / d_dot_d_exp  # (B, N, 1)
+        perp_p = v_p - proj_coeff_p * d_exp  # (B, N, C) — component ⊥ d
 
-            for j in range(N):
-                if i == j:
-                    continue
-                p_j = global_prototypes[j]  # (C,)
-                # Check which side p_j is on
-                dot_val = torch.dot(p_j - p_i, n_i)
+        # Same/different side: sign of dot(perp_O, perp_p)
+        # perp_O: (B, C) → (B, 1, C)
+        dot_sign = (perp_O.unsqueeze(1) * perp_p).sum(dim=-1)  # (B, N)
 
-                if dot_val.item() > 0:
-                    # Case 1: opposite side from O
-                    n_opposite += 1
-                    loss_opposite_sum += mean_per_proto_loss[i].item()
-                    count_opposite += 1
-                else:
-                    # Case 2: same side as O
-                    n_same += 1
-                    loss_same_sum += mean_per_proto_loss[i].item()
-                    count_same += 1
+        is_same = dot_sign >= 0  # O and p_i same side of H
+        is_diff = dot_sign < 0   # O and p_i different side of H
 
-        total_pairs = n_opposite + n_same
-        diagnostics['case_opposite_ratio'] = n_opposite / max(total_pairs, 1)
-        diagnostics['case_same_ratio'] = n_same / max(total_pairs, 1)
-        diagnostics['loss_case_opposite'] = loss_opposite_sum / max(count_opposite, 1)
-        diagnostics['loss_case_same'] = loss_same_sum / max(count_same, 1)
-        diagnostics['n_pairs_opposite'] = n_opposite
+        n_same = is_same.sum().item()
+        n_diff = is_diff.sum().item()
+        total = n_same + n_diff
+
+        diagnostics['case_same_ratio'] = n_same / max(total, 1)
+        diagnostics['case_opposite_ratio'] = n_diff / max(total, 1)
+        diagnostics['loss_case_same'] = per_proto_loss[is_same].mean().item() if n_same > 0 else 0.0
+        diagnostics['loss_case_opposite'] = per_proto_loss[is_diff].mean().item() if n_diff > 0 else 0.0
         diagnostics['n_pairs_same'] = n_same
+        diagnostics['n_pairs_opposite'] = n_diff
 
         return diagnostics
 
@@ -491,7 +488,9 @@ class PrototypeBYOLLoss(nn.Module):
         # ==========================================
         # 3. DIAGNOSTICS (no grad, no overhead on backward)
         # ==========================================
-        diagnostics = self.compute_diagnostics(per_proto_loss.detach())
+        diagnostics = self.compute_diagnostics(
+            per_proto_loss.detach(), glo_feats.detach(), glo_feats_k.detach()
+        )
 
         # ==========================================
         # 4. TOTAL LOSS

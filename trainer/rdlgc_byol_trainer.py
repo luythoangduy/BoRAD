@@ -312,6 +312,18 @@ class RDLGCBYOLTrainer(BaseTrainer):
                 log_dict['proto/n_pairs_opposite'] = proto_diagnostics['n_pairs_opposite']
                 log_dict['proto/n_pairs_same'] = proto_diagnostics['n_pairs_same']
 
+            # === Feature Variance Logging (to detect collapse) ===
+            # Global Average Pooling then Variance across batch
+            with torch.no_grad():
+                var_enc = torch.stack([F.adaptive_avg_pool2d(f, 1).view(f.size(0), -1).var(dim=0).mean() for f in self.feats_t]).mean().item()
+                var_dec = torch.stack([F.adaptive_avg_pool2d(f, 1).view(f.size(0), -1).var(dim=0).mean() for f in self.feats_s]).mean().item()
+                log_dict['train/var_enc'] = var_enc
+                log_dict['train/var_dec'] = var_dec
+                
+                if self.mid is not None:
+                    var_mff = F.adaptive_avg_pool2d(self.mid, 1).view(self.mid.size(0), -1).var(dim=0).mean().item()
+                    log_dict['train/var_mff'] = var_mff
+
             wandb.log(log_dict, step=self.iter)
 
         # Log momentum + diagnostics periodically to console
@@ -330,78 +342,6 @@ class RDLGCBYOLTrainer(BaseTrainer):
                     f"case_same: {proto_diagnostics['case_same_ratio']:.2%} "
                     f"(loss={proto_diagnostics['loss_case_same']:.4f})")
 
-    @torch.no_grad()
-    def _compute_diversity_metrics(self, features, max_samples=3000):
-        """
-        Compute lightweight diversity metrics for a feature tensor.
-
-        Args:
-            features: (N, D) tensor
-            max_samples: max samples to use (subsample if larger)
-        Returns:
-            dict with cos_sim_mean, sv_entropy, effective_rank, feat_std_mean, uniformity
-        """
-        if features.dim() > 2:
-            if features.dim() == 4:
-                B, C, H, W = features.shape
-                features = features.permute(0, 2, 3, 1).reshape(-1, C)
-            else:
-                features = features.reshape(-1, features.shape[-1])
-
-        N, D = features.shape
-        if N > max_samples:
-            idx = torch.randperm(N, device=features.device)[:max_samples]
-            features = features[idx]
-            N = max_samples
-
-        metrics = {}
-
-        # 1. Pairwise cosine similarity
-        feat_norm = F.normalize(features, dim=-1, p=2)
-        if N <= 2000:
-            sim_matrix = torch.mm(feat_norm, feat_norm.t())
-            mask = ~torch.eye(N, dtype=torch.bool, device=features.device)
-            off_diag = sim_matrix[mask]
-            metrics['cos_sim_mean'] = off_diag.mean().item()
-            metrics['cos_sim_std'] = off_diag.std().item()
-        else:
-            # Subsample pairs for large N
-            idx1 = torch.randint(0, N, (5000,), device=features.device)
-            idx2 = torch.randint(0, N, (5000,), device=features.device)
-            valid = idx1 != idx2
-            cos_vals = (feat_norm[idx1[valid]] * feat_norm[idx2[valid]]).sum(dim=-1)
-            metrics['cos_sim_mean'] = cos_vals.mean().item()
-            metrics['cos_sim_std'] = cos_vals.std().item()
-
-        # 2. SVD entropy & effective rank
-        centered = features - features.mean(dim=0, keepdim=True)
-        try:
-            _, S, _ = torch.linalg.svd(centered, full_matrices=False)
-            S = S.clamp(min=1e-10)
-            p = S / S.sum()
-            entropy = -(p * torch.log(p)).sum()
-            max_entropy = torch.log(torch.tensor(float(min(N, D)), device=features.device))
-            metrics['sv_entropy'] = (entropy / max_entropy).item()
-            metrics['effective_rank'] = torch.exp(entropy).item()
-            metrics['top1_sv_ratio'] = (S[0] / S.sum()).item()
-        except Exception:
-            metrics['sv_entropy'] = 0.0
-            metrics['effective_rank'] = 1.0
-            metrics['top1_sv_ratio'] = 1.0
-
-        # 3. Feature std
-        per_dim_std = features.std(dim=0)
-        metrics['feat_std_mean'] = per_dim_std.mean().item()
-        metrics['dead_dims_pct'] = ((per_dim_std < 1e-6).sum().item() / D) * 100
-
-        # 4. Uniformity
-        sub_n = min(N, 2000)
-        sub_feats = feat_norm[:sub_n]
-        sq_dist = torch.cdist(sub_feats, sub_feats, p=2).pow(2)
-        umask = ~torch.eye(sub_n, dtype=torch.bool, device=features.device)
-        metrics['uniformity'] = torch.log(torch.exp(-2.0 * sq_dist[umask]).mean() + 1e-10).item()
-
-        return metrics
 
     @torch.no_grad()
     def test(self):
@@ -416,11 +356,6 @@ class RDLGCBYOLTrainer(BaseTrainer):
         batch_idx = 0
         test_length = self.cfg.data.test_size
         test_loader = iter(self.test_loader)
-
-        # === Feature accumulators for diversity analysis ===
-        acc_encoder = [[], [], []]  # 3 scales
-        acc_decoder = [[], [], []]  # 3 scales
-        acc_global = []             # GAP features
 
         while batch_idx < test_length:
             t1 = get_timepc()
@@ -462,14 +397,6 @@ class RDLGCBYOLTrainer(BaseTrainer):
                 )
                 vis_feature_channels(self.img_path, self.feats_t, self.feats_s, self.cfg.model.name, root_out)
 
-            # === Accumulate features for diversity (GAP per sample to save memory) ===
-            for s in range(min(3, len(self.feats_t))):
-                acc_encoder[s].append(F.adaptive_avg_pool2d(self.feats_t[s], 1).squeeze(-1).squeeze(-1).cpu())
-                acc_decoder[s].append(F.adaptive_avg_pool2d(self.feats_s[s], 1).squeeze(-1).squeeze(-1).cpu())
-            # Global features from MFF_OCE (if available)
-            if self.mid is not None:
-                acc_global.append(F.adaptive_avg_pool2d(self.mid, 1).squeeze(-1).squeeze(-1).cpu())
-
             # Accumulate results in RAM (no disk I/O)
             imgs_masks.append(self.imgs_mask.cpu().numpy().astype(int))
             anomaly_maps.append(anomaly_map)
@@ -491,39 +418,6 @@ class RDLGCBYOLTrainer(BaseTrainer):
         # Merge results
         results = dict(imgs_masks=imgs_masks, anomaly_maps=anomaly_maps, cls_names=cls_names, anomalys=anomalys)
         results = {k: np.concatenate(v, axis=0) for k, v in results.items()}
-
-        # === Compute feature diversity metrics ===
-        diversity_results = {}
-        if self.master:
-            device = next(self.net.parameters()).device
-            stage_names = []
-            # Encoder scales
-            for s in range(3):
-                if acc_encoder[s]:
-                    enc_feats = torch.cat(acc_encoder[s], dim=0).to(device)
-                    stage_names.append((f'enc_s{s+1}', enc_feats))
-            # Decoder scales
-            for s in range(3):
-                if acc_decoder[s]:
-                    dec_feats = torch.cat(acc_decoder[s], dim=0).to(device)
-                    stage_names.append((f'dec_s{s+1}', dec_feats))
-            # Global (MFF_OCE)
-            if acc_global:
-                glo_feats = torch.cat(acc_global, dim=0).to(device)
-                stage_names.append(('global_mff', glo_feats))
-
-            log_msg(self.logger, '\n=== Feature Diversity (Test) ===')
-            for name, feats in stage_names:
-                dm = self._compute_diversity_metrics(feats)
-                diversity_results[name] = dm
-                log_msg(self.logger,
-                    f"  [{name}] cos_sim={dm['cos_sim_mean']:.4f}±{dm['cos_sim_std']:.4f}  "
-                    f"sv_ent={dm['sv_entropy']:.4f}  eff_rank={dm['effective_rank']:.1f}  "
-                    f"std={dm['feat_std_mean']:.4f}  dead={dm['dead_dims_pct']:.1f}%  "
-                    f"uniform={dm['uniformity']:.4f}")
-
-            # Free accumulators
-            del acc_encoder, acc_decoder, acc_global
 
         # Compute metrics per class
         if self.master:
@@ -575,9 +469,7 @@ class RDLGCBYOLTrainer(BaseTrainer):
                         wandb_metrics[f'test/{metric}_avg'] = avg_val
 
                 # === Feature diversity metrics ===
-                for stage_name, dm in diversity_results.items():
-                    for mk, mv in dm.items():
-                        wandb_metrics[f'diversity/{stage_name}_{mk}'] = mv
+                # Removed as per user request
 
                 wandb_metrics['test/epoch'] = self.epoch
                 wandb.log(wandb_metrics, step=self.iter)
