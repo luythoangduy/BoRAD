@@ -148,7 +148,7 @@ class RDLGCBYOLTrainer(BaseTrainer):
 
     def forward(self):
         """Forward pass"""
-        outputs = self.net(self.imgs)
+        outputs = self.net(self.imgs, self.aug_imgs)
         (self.feats_t, self.feats_s, self.glb_feats, self.glb_feats_k, self.mid, self.mid_k) = outputs
 
 
@@ -164,7 +164,8 @@ class RDLGCBYOLTrainer(BaseTrainer):
         
         with self.amp_autocast():
             self.forward()
-            
+            loss_cos = self.loss_terms['cos'](self.feats_t, self.feats_s)
+            loss = loss_cos
             # === Prototype InfoNCE loss (optional) ===
             loss_glb = None
             proto_diagnostics = None

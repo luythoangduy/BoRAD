@@ -17,219 +17,6 @@ import torch.nn.functional as F
 from . import LOSS
 
 
-@LOSS.register_module
-class BYOLDenseLoss(nn.Module):
-    """
-    BYOL-style dense contrastive loss.
-    
-    Loss = 2 - 2 * cosine_similarity(online_output, stop_gradient(target_output))
-    
-    No negative samples needed because:
-    1. Predictor creates asymmetry
-    2. Target is a moving target (momentum update)
-    3. Online must predict target, cannot just copy
-    
-    Args:
-        lam: Loss weight multiplier
-        use_spatial_matching: Whether to use spatial correspondence matching
-    """
-    
-    def __init__(self, lam=1.0, use_spatial_matching=False):
-        super(BYOLDenseLoss, self).__init__()
-        self.lam = lam
-        self.use_spatial_matching = use_spatial_matching
-    
-    def byol_loss(self, online, target):
-        """
-        Basic BYOL loss: negative cosine similarity
-        
-        Args:
-            online: Online network output (with predictor) - gradients flow
-            target: Target network output (no predictor) - no gradients
-        
-        Returns:
-            loss: 2 - 2 * cos_sim(online, target)
-        """
-        online = F.normalize(online, dim=1, p=2)
-        target = F.normalize(target, dim=1, p=2)
-        
-        # Mean over spatial dimensions and batch
-        loss = 2 - 2 * (online * target).sum(dim=1).mean()
-        return loss
-    
-    def byol_dense_loss(self, q_grid, k_grid, q_b, k_b):
-        """
-        Dense BYOL loss with spatial correspondence.
-        
-        1. Find spatial correspondence using backbone features (q_b, k_b)
-        2. Match online features (q_grid) with corresponding target features (k_grid)
-        3. Compute BYOL loss on matched pairs
-        
-        Args:
-            q_grid: Online output features (B, C, H, W) - after predictor
-            k_grid: Target output features (B, C, H, W) - no predictor, detached
-            q_b: Online backbone features for matching (B, C, H, W)
-            k_b: Target backbone features for matching (B, C, H, W)
-        
-        Returns:
-            loss: Dense BYOL loss value
-        """
-        # Normalize all features
-        q_grid = F.normalize(q_grid, p=2, dim=1)
-        k_grid = F.normalize(k_grid, p=2, dim=1)  # Already detached from momentum encoder
-        q_b = F.normalize(q_b, p=2, dim=1)
-        k_b = F.normalize(k_b, p=2, dim=1)
-        
-        B, C, H, W = q_grid.shape
-        
-        if self.use_spatial_matching:
-            # === Find spatial correspondence using backbone features ===
-            q_b_flat = q_b.view(B, q_b.size(1), -1)  # (B, C_b, H*W)
-            k_b_flat = k_b.view(B, k_b.size(1), -1)  # (B, C_b, H*W)
-            
-            # Compute similarity matrix between all positions
-            sim_matrix = torch.einsum('bci,bcj->bij', q_b_flat, k_b_flat)  # (B, H*W, H*W)
-            
-            # Find best matching position in target for each online position
-            max_sim_idx = torch.argmax(sim_matrix, dim=-1)  # (B, H*W)
-            
-            # === Gather matched target features ===
-            q_grid_flat = q_grid.view(B, C, -1)  # (B, C, H*W)
-            k_grid_flat = k_grid.view(B, C, -1)  # (B, C, H*W)
-            
-            # Expand indices for gathering
-            indices = max_sim_idx.unsqueeze(1).expand(-1, C, -1)  # (B, C, H*W)
-            k_matched = k_grid_flat.gather(2, indices)  # (B, C, H*W)
-            
-            # === BYOL loss on matched pairs ===
-            # Loss = 2 - 2 * cos_sim
-            loss = 2 - 2 * (q_grid_flat * k_matched).sum(dim=1).mean()
-        else:
-            # Simple BYOL loss without spatial matching (same position)
-            loss = 2 - 2 * (q_grid * k_grid).sum(dim=1).mean()
-        
-        return loss
-
-    def forward(self, q_b, k_b, q_grid, k_grid, labels=None):
-        """
-        Forward pass.
-        
-        Args:
-            q_b: Online backbone features (list of tensors or single tensor)
-            k_b: Target backbone features (list of tensors or single tensor)
-            q_grid: Online output after predictor (list of tensors or single tensor)
-            k_grid: Target output, no predictor (list of tensors or single tensor)
-            labels: Class labels (optional, for compatibility but not used in BYOL)
-        
-        Returns:
-            loss: Weighted BYOL dense loss
-        """
-        # Handle both list and single tensor inputs
-        if not isinstance(q_grid, list):
-            q_grid = [q_grid]
-            k_grid = [k_grid]
-            q_b = [q_b]
-            k_b = [k_b]
-        
-        total_loss = 0.0
-        
-        for qg, kg, qb, kb in zip(q_grid, k_grid, q_b, k_b):
-            loss = self.byol_dense_loss(qg, kg, qb, kb)
-            total_loss += loss
-        
-        return total_loss / len(q_grid) * self.lam
-
-
-@LOSS.register_module
-class ClassAwareBYOLDenseLoss(nn.Module):
-    """
-    Class-aware BYOL dense loss.
-    
-    Only computes BYOL loss within the same class, ensuring that
-    features from the same class are pulled together while maintaining
-    class separation through the global SCL loss.
-    
-    Args:
-        lam: Loss weight multiplier
-        use_spatial_matching: Whether to use spatial correspondence matching
-    """
-    
-    def __init__(self, lam=1.0, use_spatial_matching=False):
-        super(ClassAwareBYOLDenseLoss, self).__init__()
-        self.lam = lam
-        self.use_spatial_matching = use_spatial_matching
-    
-    def class_aware_byol_loss(self, q_grid, k_grid, q_b, k_b, labels):
-        """
-        Compute BYOL loss only within samples of the same class.
-        """
-        q_grid = F.normalize(q_grid, p=2, dim=1)
-        k_grid = F.normalize(k_grid, p=2, dim=1)
-        q_b = F.normalize(q_b, p=2, dim=1)
-        k_b = F.normalize(k_b, p=2, dim=1)
-        
-        unique_labels = torch.unique(labels)
-        total_loss = 0.0
-        num_valid_classes = 0
-        
-        for label in unique_labels:
-            mask = labels == label
-            if mask.sum() < 1:
-                continue
-            
-            # Get features for this class
-            q_cls = q_grid[mask]
-            k_cls = k_grid[mask]
-            qb_cls = q_b[mask]
-            kb_cls = k_b[mask]
-            
-            B_cls, C, H, W = q_cls.shape
-            
-            if self.use_spatial_matching:
-                # Find spatial correspondence within class
-                qb_flat = qb_cls.view(B_cls, qb_cls.size(1), -1)
-                kb_flat = kb_cls.view(B_cls, kb_cls.size(1), -1)
-                
-                sim = torch.einsum('bci,bcj->bij', qb_flat, kb_flat)
-                max_idx = torch.argmax(sim, dim=-1)
-                
-                q_flat = q_cls.view(B_cls, C, -1)
-                k_flat = k_cls.view(B_cls, C, -1)
-                
-                indices = max_idx.unsqueeze(1).expand(-1, C, -1)
-                k_matched = k_flat.gather(2, indices)
-                
-                loss = 2 - 2 * (q_flat * k_matched).sum(dim=1).mean()
-            else:
-                loss = 2 - 2 * (q_cls * k_cls).sum(dim=1).mean()
-            
-            total_loss += loss
-            num_valid_classes += 1
-        
-        if num_valid_classes == 0:
-            return torch.tensor(0.0, device=q_grid.device)
-        
-        return total_loss / num_valid_classes
-
-    def forward(self, q_b, k_b, q_grid, k_grid, labels):
-        """
-        Forward pass with class-aware BYOL loss.
-        """
-        if not isinstance(q_grid, list):
-            q_grid = [q_grid]
-            k_grid = [k_grid]
-            q_b = [q_b]
-            k_b = [k_b]
-        
-        total_loss = 0.0
-        
-        for qg, kg, qb, kb in zip(q_grid, k_grid, q_b, k_b):
-            loss = self.class_aware_byol_loss(qg, kg, qb, kb, labels)
-            total_loss += loss
-        
-        return total_loss / len(q_grid) * self.lam
-
-
 def generate_orthonormal_vectors(hw, n, dim):
     """
     Generate n orthonormal vectors of dimension dim for EACH spatial location.
@@ -275,12 +62,6 @@ class PrototypeBYOLLoss(nn.Module):
             generate_orthonormal_vectors(H * W, n_prototypes, feat_dim)
         )
 
-        # === Linear merge: Use 1x1 Conv to handle (B, C, H, W) natively ===
-        self.linear_merge = nn.Sequential(
-            nn.Conv2d(feat_dim * 2, feat_dim, kernel_size=1),
-            nn.InstanceNorm2d(feat_dim),
-            nn.LeakyReLU(inplace=True),
-        )
 
         # === Predictor head (online only — creates asymmetry for BYOL) ===
         self.predictor = nn.Sequential(
@@ -289,7 +70,6 @@ class PrototypeBYOLLoss(nn.Module):
             nn.LeakyReLU(inplace=True),
             nn.Conv2d(feat_dim, feat_dim, kernel_size=1),
             nn.InstanceNorm2d(feat_dim),
-            nn.LeakyReLU(inplace=True)
         )
 
         # === Global Predictor head ===
@@ -299,7 +79,6 @@ class PrototypeBYOLLoss(nn.Module):
             nn.LeakyReLU(inplace=True),
             nn.Linear(feat_dim, feat_dim),
             nn.InstanceNorm1d(feat_dim),
-            nn.LeakyReLU(inplace=True)
         )
 
     def shift_to_prototypes(self, features):
@@ -352,13 +131,7 @@ class PrototypeBYOLLoss(nn.Module):
         # Reshape back to spatial grid: (B, H*W, C) -> (B, C, H, W)
         proto_features = proto_features.transpose(1, 2).view(B, C, H, W)
 
-        # Concatenate: [original_features, prototype_features]
-        concat_features = torch.cat([spatial_feats, proto_features], dim=1)  # (B, 2*C, H, W)
-
-        # Linear merge: 2*C → C
-        merged = self.linear_merge(concat_features)  # (B, C, H, W)
-
-        return merged
+        return proto_features
 
     @torch.no_grad()
     def compute_diagnostics(self, per_proto_loss, glo_feats, glo_feats_k):
@@ -468,9 +241,7 @@ class PrototypeBYOLLoss(nn.Module):
             merged_k = self.query_prototypes(spatial_feats_k)
 
         # Loss computation
-        predicted_spatial = F.normalize(predicted_spatial, dim=1, p=2)
-        target_spatial = F.normalize(merged_k, dim=1, p=2)
-        loss_spatial = 2 - 2 * (predicted_spatial * target_spatial).sum(dim=1).mean()
+        loss_spatial = F.mse_loss(predicted_spatial, merged_k, reduction='mean')
 
 
         # ==========================================
