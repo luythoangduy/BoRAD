@@ -241,7 +241,11 @@ class PrototypeBYOLLoss(nn.Module):
             merged_k = self.query_prototypes(spatial_feats_k)
 
         # Loss computation
-        loss_spatial = F.mse_loss(predicted_spatial, merged_k, reduction='mean')
+        predicted_spatial = F.normalize(predicted_spatial, dim=1, p=2)
+        target_spatial = F.normalize(merged_k, dim=1, p=2)
+        loss_spatial = 2 - 2 * (predicted_spatial * target_spatial).sum(dim=1).mean()
+
+        # loss_spatial = F.mse_loss(predicted_spatial, merged_k, reduction='mean')
 
 
         # ==========================================
@@ -260,11 +264,9 @@ class PrototypeBYOLLoss(nn.Module):
         predicted_global = predicted_global.reshape(B, N, -1)                   # (B, N, C)
 
         # BYOL loss per prototype
-        predicted_global = F.normalize(predicted_global, dim=2, p=2)
-        target_global = F.normalize(shifted_k, dim=2, p=2)
-        
-        per_proto_loss = 2 - 2 * (predicted_global * target_global).sum(dim=2)  # (B, N)
-        loss_global = per_proto_loss.mean()
+
+        per_proto_loss = F.mse_loss(predicted_global, shifted_k, reduction='none').mean(dim=2)  # (B, N)
+
 
         # ==========================================
         # 3. PROTOTYPE ALIGNMENT LOSS (Pull prototypes to features)
@@ -292,7 +294,6 @@ class PrototypeBYOLLoss(nn.Module):
         # 5. FINAL COMBINATION
         # ==========================================
         total_loss = self.lam_spatial * loss_spatial + \
-                     self.lam_global * loss_global + \
-                     self.lam_align * loss_align
+                     self.lam_global * loss_global 
         
         return total_loss * self.lam, diagnostics
