@@ -16,6 +16,97 @@ import torch.nn.functional as F
 # Use relative import to avoid circular dependency
 from . import get_model, MODEL
 
+# ============================================================================
+# Predictor Layers (NEW - KEY component for BYOL)
+# ============================================================================
+class PositionalNorm2d(nn.Module):
+    """
+    Positional Normalization (PONO): Chuẩn hóa feature theo chiều Channels 
+    tại mỗi vị trí pixel (h, w) riêng biệt.
+    
+    Điều này giúp nhiễu tại pixel này KHÔNG ảnh hưởng đến thống kê của pixel khác.
+    """
+    def __init__(self, num_features, affine=False, eps=1e-5):
+        super(PositionalNorm2d, self).__init__()
+        self.num_features = num_features
+        self.affine = affine
+        self.eps = eps
+        
+        if self.affine:
+            # Tham số learnable (gamma, beta) có kích thước (1, C, 1, 1) 
+            # để scale lại từng channel sau khi norm
+            self.weight = nn.Parameter(torch.ones(1, num_features, 1, 1))
+            self.bias = nn.Parameter(torch.zeros(1, num_features, 1, 1))
+        else:
+            self.register_parameter('weight', None)
+            self.register_parameter('bias', None)
+
+    def forward(self, x):
+        # x shape: (N, C, H, W)
+        
+        # 1. Tính Mean và Var dọc theo chiều Channels (dim=1)
+        # Kết quả sẽ có shape (N, 1, H, W) -> Thống kê riêng cho từng pixel
+        mean = x.mean(dim=1, keepdim=True)
+        var = x.var(dim=1, keepdim=True, unbiased=False)
+        
+        # 2. Chuẩn hóa
+        x_norm = (x-mean) / torch.sqrt(var + self.eps)
+        
+        # 3. Scale và Shift (nếu dùng affine)
+        if self.affine:
+            x_norm = x_norm * self.weight + self.bias
+            
+        return x_norm
+class PredictorLayer(nn.Module):
+    """
+    BYOL-style predictor: creates asymmetry between online and target networks.
+    This is the KEY component that prevents collapse without negative samples.
+    
+    Architecture: Conv1x1 → BN → ReLU → Conv1x1
+    """
+    def __init__(self, in_c, hidden_c=None, out_c=None):
+        super(PredictorLayer, self).__init__()
+        hidden_c = hidden_c or in_c // 2
+        out_c = out_c or in_c
+        
+        self.predictor = nn.Sequential(
+            nn.Conv2d(in_c, hidden_c, kernel_size=1, bias=False),
+            nn.InstanceNorm2d(hidden_c),
+            nn.LeakyReLU(),
+            nn.Conv2d(hidden_c, out_c, kernel_size=1, bias=False),
+            nn.InstanceNorm2d(out_c),
+            nn.LeakyReLU(),
+        )
+    
+    def forward(self, x):
+        return self.predictor(x)
+
+
+class MultiPredictorLayer(nn.Module):
+    """
+    Multi-scale predictor for all feature levels.
+    Matches the structure of MultiProjectionLayer.
+    """
+    def __init__(self, base=64):
+        super(MultiPredictorLayer, self).__init__()
+        # Match the output channels of MultiProjectionLayer
+        self.pred_a = PredictorLayer(base * 4, hidden_c=base * 2, out_c=base * 4)
+        self.pred_b = PredictorLayer(base * 8, hidden_c=base * 4, out_c=base * 8)
+        self.pred_c = PredictorLayer(base * 16, hidden_c=base * 8, out_c=base * 16)
+    
+    def forward(self, features):
+        """
+        Args:
+            features: list of 3 feature maps from projector
+        Returns:
+            list of 3 predicted feature maps
+        """
+        return [
+            self.pred_a(features[0]),
+            self.pred_b(features[1]),
+            self.pred_c(features[2])
+        ]
+
 
 # ============================================================================
 # Existing layers (copied from rd.py for completeness)
@@ -234,6 +325,7 @@ class RDLGC_BYOL(nn.Module):
         
         # === Online Network ===
         self.proj_layer = MultiProjectionLayer(base=64, dp=dp)
+        # self.predictor = MultiPredictorLayer(base=64) if use_predictor else None  # KEY: Predictor creates asymmetry
         
         # === Target Network (Momentum) ===
         self.proj_layer_momentum = MultiProjectionLayer(base=64, dp=dp)

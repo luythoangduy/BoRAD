@@ -264,9 +264,8 @@ class PrototypeBYOLLoss(nn.Module):
         predicted_global = predicted_global.reshape(B, N, -1)                   # (B, N, C)
 
         # BYOL loss per prototype
-
         per_proto_loss = F.mse_loss(predicted_global, shifted_k, reduction='none').mean(dim=2)  # (B, N)
-
+        loss_global = per_proto_loss.mean()
 
         # ==========================================
         # 3. PROTOTYPE ALIGNMENT LOSS (Pull prototypes to features)
