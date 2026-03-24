@@ -1,535 +1,249 @@
 """
-RDLGC with BYOL-style architecture for Multi-Class Anomaly Detection
+Prototype Orthogonal Residual Learning (PORL) for Multi-Class Anomaly Detection
 
-Key changes from original:
-1. Added Predictor layer (creates asymmetry - KEY to prevent collapse)
-2. Online path: encoder → projector → predictor
-3. Target path: encoder → projector (NO predictor)
-4. No negative samples needed - momentum + asymmetry prevents collapse
+Key idea: Instead of shift (f - p_i) which cancels out in MSE,
+project OUT the prototype component and compute MSE on the RESIDUAL:
+  r_i(f) = f - (f · p_i) * p_i
 
-Reference: BYOL (Bootstrap Your Own Latent)
+This creates anisotropic penalty:
+- Tolerant along prototype directions (reduces mis-reconstruction)
+- Strict perpendicular to prototypes (prevents identical shortcut)
+
+Reference: BYOL (Bootstrap Your Own Latent) + Orthogonal Projection
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-# Use relative import to avoid circular dependency
-from . import get_model, MODEL
+from . import LOSS
 
-# ============================================================================
-# Predictor Layers (NEW - KEY component for BYOL)
-# ============================================================================
-class PositionalNorm2d(nn.Module):
+
+def generate_orthonormal_vectors(hw, n, dim):
     """
-    Positional Normalization (PONO): Chuẩn hóa feature theo chiều Channels 
-    tại mỗi vị trí pixel (h, w) riêng biệt.
-    
-    Điều này giúp nhiễu tại pixel này KHÔNG ảnh hưởng đến thống kê của pixel khác.
-    """
-    def __init__(self, num_features, affine=False, eps=1e-5):
-        super(PositionalNorm2d, self).__init__()
-        self.num_features = num_features
-        self.affine = affine
-        self.eps = eps
-        
-        if self.affine:
-            # Tham số learnable (gamma, beta) có kích thước (1, C, 1, 1) 
-            # để scale lại từng channel sau khi norm
-            self.weight = nn.Parameter(torch.ones(1, num_features, 1, 1))
-            self.bias = nn.Parameter(torch.zeros(1, num_features, 1, 1))
-        else:
-            self.register_parameter('weight', None)
-            self.register_parameter('bias', None)
-
-    def forward(self, x):
-        # x shape: (N, C, H, W)
-        
-        # 1. Tính Mean và Var dọc theo chiều Channels (dim=1)
-        # Kết quả sẽ có shape (N, 1, H, W) -> Thống kê riêng cho từng pixel
-        mean = x.mean(dim=1, keepdim=True)
-        var = x.var(dim=1, keepdim=True, unbiased=False)
-        
-        # 2. Chuẩn hóa
-        x_norm = (x-mean) / torch.sqrt(var + self.eps)
-        
-        # 3. Scale và Shift (nếu dùng affine)
-        if self.affine:
-            x_norm = x_norm * self.weight + self.bias
-            
-        return x_norm
-class PredictorLayer(nn.Module):
-    """
-    BYOL-style predictor: creates asymmetry between online and target networks.
-    This is the KEY component that prevents collapse without negative samples.
-    
-    Architecture: Conv1x1 → BN → ReLU → Conv1x1
-    """
-    def __init__(self, in_c, hidden_c=None, out_c=None):
-        super(PredictorLayer, self).__init__()
-        hidden_c = hidden_c or in_c // 2
-        out_c = out_c or in_c
-        
-        self.predictor = nn.Sequential(
-            nn.Conv2d(in_c, hidden_c, kernel_size=1, bias=False),
-            nn.InstanceNorm2d(hidden_c),
-            nn.LeakyReLU(),
-            nn.Conv2d(hidden_c, out_c, kernel_size=1, bias=False),
-            nn.InstanceNorm2d(out_c),
-            nn.LeakyReLU(),
-        )
-    
-    def forward(self, x):
-        return self.predictor(x)
-
-
-class MultiPredictorLayer(nn.Module):
-    """
-    Multi-scale predictor for all feature levels.
-    Matches the structure of MultiProjectionLayer.
-    """
-    def __init__(self, base=64):
-        super(MultiPredictorLayer, self).__init__()
-        # Match the output channels of MultiProjectionLayer
-        self.pred_a = PredictorLayer(base * 4, hidden_c=base * 2, out_c=base * 4)
-        self.pred_b = PredictorLayer(base * 8, hidden_c=base * 4, out_c=base * 8)
-        self.pred_c = PredictorLayer(base * 16, hidden_c=base * 8, out_c=base * 16)
-    
-    def forward(self, features):
-        """
-        Args:
-            features: list of 3 feature maps from projector
-        Returns:
-            list of 3 predicted feature maps
-        """
-        return [
-            self.pred_a(features[0]),
-            self.pred_b(features[1]),
-            self.pred_c(features[2])
-        ]
-
-
-# ============================================================================
-# Existing layers (copied from rd.py for completeness)
-# ============================================================================
-
-class Bottleneck(nn.Module):
-    expansion = 4
-
-    def __init__(self, inplanes, planes, stride=1, downsample=None, groups=1,
-                 base_width=64, dilation=1, norm_layer=None):
-        super(Bottleneck, self).__init__()
-        if norm_layer is None:
-            norm_layer = nn.BatchNorm2d
-        width = int(planes * (base_width / 64.)) * groups
-        self.conv1 = nn.Conv2d(inplanes, width, kernel_size=1, stride=1, bias=False)
-        self.bn1 = norm_layer(width)
-        self.conv2 = nn.Conv2d(width, width, kernel_size=3, stride=stride, padding=dilation, groups=groups, bias=False,
-                               dilation=dilation)
-        self.bn2 = norm_layer(width)
-        self.conv3 = nn.Conv2d(width, planes * self.expansion, kernel_size=1, stride=1, bias=False)
-        self.bn3 = norm_layer(planes * self.expansion)
-        self.relu = nn.ReLU(inplace=True)
-        self.downsample = downsample
-        self.stride = stride
-
-    def forward(self, x):
-        identity = x
-
-        out = self.conv1(x)
-        out = self.bn1(out)
-        out = self.relu(out)
-
-        out = self.conv2(out)
-        out = self.bn2(out)
-        out = self.relu(out)
-
-        out = self.conv3(out)
-        out = self.bn3(out)
-
-        if self.downsample is not None:
-            identity = self.downsample(x)
-
-        out += identity
-        out = self.relu(out)
-
-        return out
-
-
-class MFF_OCE(nn.Module):
-    """Multi-scale Feature Fusion with OCE"""
-    def __init__(self, block, layers, width_per_group=64, norm_layer=None):
-        super(MFF_OCE, self).__init__()
-        if norm_layer is None:
-            norm_layer = nn.BatchNorm2d
-        self._norm_layer = norm_layer
-        self.base_width = width_per_group
-
-        # Fixed: inplanes should be 256 * block.expansion (256 * 4 = 1024)
-        self.inplanes = 256 * block.expansion
-        self.dilation = 1
-        # bn_layer needs to be created AFTER concat, which has inplanes*3 channels
-        self.bn_layer = self._make_layer(block, 512, layers, stride=2)
-
-        # Convolution layers for feature processing
-        self.conv1 = nn.Conv2d(64 * block.expansion, 128 * block.expansion, kernel_size=3, stride=2, padding=1, bias=False)
-        self.bn1 = norm_layer(128 * block.expansion)
-        self.relu = nn.ReLU(inplace=True)
-        self.conv2 = nn.Conv2d(128 * block.expansion, 256 * block.expansion, kernel_size=3, stride=2, padding=1, bias=False)
-        self.bn2 = norm_layer(256 * block.expansion)
-        self.conv3 = nn.Conv2d(128 * block.expansion, 256 * block.expansion, kernel_size=3, stride=2, padding=1, bias=False)
-        self.bn3 = norm_layer(256 * block.expansion)
-
-    def _make_layer(self, block, planes, blocks, stride=1, dilate=False):
-        norm_layer = self._norm_layer
-        downsample = None
-        previous_dilation = self.dilation
-        if dilate:
-            self.dilation *= stride
-            stride = 1
-        # Fixed: After concat, input has inplanes*3 channels (256+512+1024=1792 for expansion=4)
-        if stride != 1 or self.inplanes != planes * block.expansion:
-            downsample = nn.Sequential(
-                nn.Conv2d(self.inplanes * 3, planes * block.expansion, 1, stride, bias=False),
-                norm_layer(planes * block.expansion),
-            )
-        layers = []
-        # First layer receives concatenated features with inplanes*3 channels
-        layers.append(block(self.inplanes * 3, planes, stride, downsample, base_width=self.base_width,
-                            dilation=previous_dilation, norm_layer=norm_layer))
-        self.inplanes = planes * block.expansion
-        for _ in range(1, blocks):
-            layers.append(block(self.inplanes, planes, base_width=self.base_width,
-                                dilation=self.dilation, norm_layer=norm_layer))
-        return nn.Sequential(*layers)
-
-    def forward(self, x):
-        l1 = self.relu(self.bn2(self.conv2(self.relu(self.bn1(self.conv1(x[0]))))))
-        l2 = self.relu(self.bn3(self.conv3(x[1])))
-        feature = torch.cat([l1, l2, x[2]], 1)
-        output = self.bn_layer(feature)
-        return output.contiguous()
-
-
-class ProjLayer(nn.Module):
-    """Projection layer for feature transformation"""
-    def __init__(self, in_c, out_c):
-        super(ProjLayer, self).__init__()
-        self.proj = nn.Sequential(
-            nn.Conv2d(in_c, in_c // 2, kernel_size=3, stride=1, padding=1),
-            nn.InstanceNorm2d(in_c // 2),
-            nn.LeakyReLU(),
-            nn.Conv2d(in_c // 2, in_c // 4, kernel_size=3, stride=1, padding=1),
-            nn.InstanceNorm2d(in_c // 4),
-            nn.LeakyReLU(),
-            nn.Conv2d(in_c // 4, in_c // 2, kernel_size=3, stride=1, padding=1),
-            nn.InstanceNorm2d(in_c // 2),
-            nn.LeakyReLU(),
-            nn.Conv2d(in_c // 2, out_c, kernel_size=3, stride=1, padding=1),
-            nn.InstanceNorm2d(out_c),
-            nn.LeakyReLU(),
-        )
-
-    def forward(self, x):
-        return self.proj(x)
-
-
-class SparseProjLayer(nn.Module):
-    """Sparse projection layer using depthwise separable convolutions"""
-    def __init__(self, in_c, out_c):
-        super(SparseProjLayer, self).__init__()
-        self.proj = nn.Sequential(
-            nn.Conv2d(in_c, in_c, kernel_size=3, stride=1, padding=1, groups=in_c),
-            nn.Conv2d(in_c, in_c // 2, kernel_size=1, stride=1),
-            nn.InstanceNorm2d(in_c // 2),
-            nn.LeakyReLU(),
-            nn.Conv2d(in_c // 2, in_c // 2, kernel_size=3, stride=1, padding=1, groups=in_c // 2),
-            nn.Conv2d(in_c // 2, in_c // 4, kernel_size=1, stride=1),
-            nn.InstanceNorm2d(in_c // 4),
-            nn.LeakyReLU(),
-            nn.Conv2d(in_c // 4, in_c // 4, kernel_size=3, stride=1, padding=1, groups=in_c // 4),
-            nn.Conv2d(in_c // 4, in_c // 2, kernel_size=1, stride=1),
-            nn.InstanceNorm2d(in_c // 2),
-            nn.LeakyReLU(),
-            nn.Conv2d(in_c // 2, in_c // 2, kernel_size=3, stride=1, padding=1, groups=in_c // 2),
-            nn.Conv2d(in_c // 2, out_c, kernel_size=1, stride=1),
-            nn.InstanceNorm2d(out_c),
-            nn.LeakyReLU(),
-        )
-
-    def forward(self, x):
-        return self.proj(x)
-
-
-class MultiProjectionLayer(nn.Module):
-    """Multi-scale projection layer"""
-    def __init__(self, base=64, dp=False):
-        super(MultiProjectionLayer, self).__init__()
-        self.proj_a = SparseProjLayer(base * 4, base * 4) if dp else ProjLayer(base * 4, base * 4)
-        self.proj_b = SparseProjLayer(base * 8, base * 8) if dp else ProjLayer(base * 8, base * 8)
-        self.proj_c = SparseProjLayer(base * 16, base * 16) if dp else ProjLayer(base * 16, base * 16)
-
-    def forward(self, features, features_noise=False):
-        if features_noise is not False:
-            return (
-                [self.proj_a(features_noise[0]), self.proj_b(features_noise[1]), self.proj_c(features_noise[2])],
-                [self.proj_a(features[0]), self.proj_b(features[1]), self.proj_c(features[2])]
-            )
-        else:
-            return [self.proj_a(features[0]), self.proj_b(features[1]), self.proj_c(features[2])]
-
-
-# ============================================================================
-# RDLGC with BYOL-style architecture (Main Model)
-# ============================================================================
-
-class RDLGC_BYOL(nn.Module):
-    """
-    RDLGC with BYOL-style architecture for preventing feature collapse.
-    
-    Architecture:
-        Online Network:  encoder → projector → predictor → output
-        Target Network:  encoder → projector → output (NO predictor)
-    
-    The asymmetry created by the predictor is KEY to preventing collapse
-    without needing negative samples or diversity losses.
+    Generate n orthonormal vectors of dimension dim for EACH spatial location.
     
     Args:
-        model_t: Teacher/encoder model config
-        model_s: Student/decoder model config  
-        dp: Use depthwise separable projections
-        use_predictor: Whether to use BYOL predictor (default: True). 
-            Set False for ablation study.
-        momentum: Momentum coefficient for target network update (default: 0.99)
-        momentum_schedule: 'constant', 'cosine', 'linear' (default: 'cosine')
-        momentum_start: Starting momentum for scheduled updates
-        momentum_end: Ending momentum for scheduled updates
+        hw: Number of spatial locations (H * W)
+        n: Number of prototypes per location (e.g., 5)
+        dim: Dimension of each prototype (e.g., 2048)
     """
+    A = torch.randn(hw, dim, n)
+    U, S, Vh = torch.linalg.svd(A, full_matrices=False)
+    # Return shape: (hw, n, dim)
+    return U.transpose(1, 2)
+
+
+@LOSS.register_module
+class PrototypeBYOLLoss(nn.Module):
+    """
+    Prototype Orthogonal Residual Learning (PORL) loss.
     
-    def __init__(self, model_t, model_s, dp=False,
-                 use_predictor=True,
-                 momentum=0.99,
-                 momentum_schedule='cosine',
-                 momentum_start=0.9,
-                 momentum_end=0.999,
-                 mask_ratio=0.5):
-        super(RDLGC_BYOL, self).__init__()
-        
-        self.use_predictor = use_predictor
-        self.mask_ratio = mask_ratio
-        
-        # === Encoder (Teacher - frozen) ===
-        self.net_t = get_model(model_t)
-        
-        # === Feature fusion ===
-        self.mff_oce = MFF_OCE(Bottleneck, 3)
-        
-        # === Online Network ===
-        self.proj_layer = MultiProjectionLayer(base=64, dp=dp)
-        # self.predictor = MultiPredictorLayer(base=64) if use_predictor else None  # KEY: Predictor creates asymmetry
-        
-        # === Target Network (Momentum) ===
-        self.proj_layer_momentum = MultiProjectionLayer(base=64, dp=dp)
-        # Initialize target with online weights
-        self.proj_layer_momentum.load_state_dict(self.proj_layer.state_dict())
-        # Freeze target network (only updated via EMA)
-        for param in self.proj_layer_momentum.parameters():
-            param.requires_grad = False
-        
-        # === Decoder (Student) ===
-        self.net_s = get_model(model_s)
-        
-        # === Momentum settings ===
-        self.momentum = momentum
-        self.momentum_schedule = momentum_schedule
-        self.momentum_start = momentum_start
-        self.momentum_end = momentum_end
-        self.current_step = 0
-        self.total_steps = 1  # Will be set by trainer
-        
-        # === Frozen layers ===
-        self.frozen_layers = ['net_t']
+    Replaces shift prototype (subtraction, cancels in MSE) with orthogonal
+    projection (removes prototype component, MSE on residual).
+    
+    Args:
+        lam: Loss weight multiplier
+        n_prototypes: Number of prototypes per spatial location (default: 7)
+        feat_dim: Feature dimension (REQUIRED, e.g. 2048)
+        H: Feature map height
+        W: Feature map width
+        lam_spatial: Weight for PORL spatial loss
+    """
 
-    def set_total_steps(self, total_steps):
-        """Set total training steps for momentum scheduling"""
-        self.total_steps = total_steps
+    def __init__(self, lam=1.0, n_prototypes=7, feat_dim=2048, H=8, W=8, 
+                 lam_spatial=1.0, lam_global=1.0, lam_align=0.1):
+        super(PrototypeBYOLLoss, self).__init__()
+        self.lam = lam
+        self.n_prototypes = n_prototypes
+        self.feat_dim = feat_dim
+        self.H = H
+        self.W = W
+        self.lam_spatial = lam_spatial
+        # lam_global and lam_align kept for config compatibility but unused
 
-    def get_current_momentum(self):
-        """Get momentum based on schedule"""
-        if self.momentum_schedule == 'constant':
-            return self.momentum
-        
-        progress = min(self.current_step / max(self.total_steps, 1), 1.0)
-        
-        if self.momentum_schedule == 'cosine':
-            # Cosine annealing from start to end
-            return self.momentum_end - (self.momentum_end - self.momentum_start) * \
-                   (1 + torch.cos(torch.tensor(progress * 3.14159))) / 2
-        elif self.momentum_schedule == 'linear':
-            return self.momentum_start + (self.momentum_end - self.momentum_start) * progress
-        else:
-            return self.momentum
+        # === Prototypes (learnable, orthonormal init) ===
+        # Shape: (H*W, n_prototypes, feat_dim)
+        self.prototypes = nn.Parameter(
+            generate_orthonormal_vectors(H * W, n_prototypes, feat_dim)
+        )
 
-    def freeze_layer(self, module):
-        """Freeze a module"""
-        module.eval()
-        for param in module.parameters():
-            param.requires_grad = False
+        # === Predictor head (online only — creates asymmetry for BYOL) ===
+        self.predictor = nn.Sequential(
+            nn.Conv2d(feat_dim, feat_dim, kernel_size=1),
+            nn.InstanceNorm2d(feat_dim),
+            nn.LeakyReLU(inplace=True),
+            nn.Conv2d(feat_dim, feat_dim, kernel_size=1),
+        )
+
+    def project_out_prototypes(self, spatial_feats):
+        """
+        PORL: Project out prototype component, keep orthogonal residual.
+        
+        For each spatial location s and prototype p_{s,i}:
+            r_{s,i}(f) = f_s - (f_s · p_{s,i}) * p_{s,i}
+        
+        Args:
+            spatial_feats: (B, C, H, W) dense features
+            
+        Returns:
+            residuals: (B, H*W, N, C) orthogonal residuals per prototype
+            proj_coeffs: (B, H*W, N) projection coefficients (for diagnostics)
+        """
+        B, C, H, W = spatial_feats.shape
+        
+        # Flatten spatial: (B, C, H*W) → (B, H*W, C)
+        features_flat = spatial_feats.view(B, C, -1).transpose(1, 2)
+        
+        # Normalize features and prototypes
+        features_norm = F.normalize(features_flat, dim=-1, p=2)     # (B, H*W, C)
+        protos_norm = F.normalize(self.prototypes, dim=-1, p=2)     # (H*W, N, C)
+        
+        # Projection coefficients: (f · p_i) for each spatial location and prototype
+        # (B, H*W, C) x (H*W, N, C) → (B, H*W, N)
+        proj_coeffs = torch.einsum('bsc,snc->bsn', features_norm, protos_norm)
+        
+        # Residual: f - (f·p)*p
+        # features_norm: (B, H*W, 1, C)
+        # proj_coeffs:   (B, H*W, N, 1)  
+        # protos_norm:   (1, H*W, N, C)
+        residuals = features_norm.unsqueeze(2) - \
+                    proj_coeffs.unsqueeze(-1) * protos_norm.unsqueeze(0)
+        # Shape: (B, H*W, N, C)
+        
+        return residuals, proj_coeffs
 
     @torch.no_grad()
-    def update_momentum_encoder(self):
+    def compute_diagnostics(self, per_proto_loss, residual_q, residual_k, 
+                            proj_coeffs_q, features_norm_q):
         """
-        Update target network using Exponential Moving Average (EMA).
-        θ_target = m * θ_target + (1 - m) * θ_online
-        """
-        m = self.get_current_momentum()
-        if isinstance(m, torch.Tensor):
-            m = m.item()
+        Compute PORL-specific diagnostics for monitoring.
         
-        for param_online, param_target in zip(
-            self.proj_layer.parameters(), 
-            self.proj_layer_momentum.parameters()
-        ):
-            param_target.data = param_target.data * m + param_online.data * (1 - m)
-        
-        self.current_step += 1
-
-    def train(self, mode=True):
-        """Set training mode"""
-        self.training = mode
-        for mname, module in self.named_children():
-            if mname in self.frozen_layers:
-                self.freeze_layer(module)
-            else:
-                module.train(mode)
-        return self
-
-    def train_forward(self, imgs, aug_imgs=None):
+        Metrics:
+        1. Prototype pairwise cosine similarity (diversity)
+        2. PORL vs raw MSE ratio (prototype effectiveness)
+        3. Variance parallel vs perpendicular (channeling effect)
+        4. Per-prototype loss distribution
         """
-        Forward pass during training (BYOL-style with momentum).
+        diagnostics = {}
 
+        # === 1. Pairwise cosine similarity between prototypes ===
+        # Mean-pool across spatial locations for global view
+        global_prototypes = self.prototypes.mean(dim=0)  # (N, C)
+        proto_norm = F.normalize(global_prototypes, dim=1, p=2)
+        cos_matrix = torch.mm(proto_norm, proto_norm.t())  # (N, N)
+        
+        N = cos_matrix.shape[0]
+        mask = ~torch.eye(N, dtype=torch.bool, device=cos_matrix.device)
+        off_diag = cos_matrix[mask]
+        
+        diagnostics['cosine_sim_mean'] = off_diag.mean().item()
+        diagnostics['cosine_sim_max'] = off_diag.max().item()
+        diagnostics['cosine_sim_min'] = off_diag.min().item()
+
+        # === 2. PORL vs Raw MSE (verify prototype is working) ===
+        # Raw MSE: ||f_q - f_k||² (without projection)
+        # residual_q, residual_k: (B, H*W, N, C)
+        # We need original features — reconstruct from residuals + projections
+        # d_raw = f_q - f_k, d_porl = r_i(f_q) - r_i(f_k) = d - (d·p_i)*p_i
+        # So ||d_porl||² = ||d||² - (d·p_i)²
+        # We can get this from per_proto_loss and the full MSE
+        
+        # features_norm_q has shape info we need
+        # per_proto_loss: (B, N) — mean over spatial and channels
+        loss_porl = per_proto_loss.mean().item()
+        
+        # Raw MSE between residuals (includes projected-out component)
+        # ||d||² per sample: reconstruct from residual loss + projection diff
+        d_residual = residual_q - residual_k  # (B, H*W, N, C)
+        d_residual_sq = (d_residual ** 2).sum(dim=-1).mean(dim=1)  # (B, N)
+        
+        # Approximate raw MSE from the view of each prototype:
+        # ||d||² = ||d_perp||² + (d·p_i)²
+        protos_norm = F.normalize(self.prototypes, dim=-1, p=2)  # (H*W, N, C)
+        
+        diagnostics['loss_porl'] = loss_porl
+        diagnostics['per_proto_loss_std'] = per_proto_loss.mean(dim=0).std().item()
+        diagnostics['per_proto_loss_min'] = per_proto_loss.mean(dim=0).min().item()
+        diagnostics['per_proto_loss_max'] = per_proto_loss.mean(dim=0).max().item()
+
+        # === 3. Variance channeling: parallel vs perpendicular ===
+        # proj_coeffs_q: (B, H*W, N) — how much feature lies along each prototype
+        # Var of proj_coeff = variance along prototype direction
+        var_parallel = proj_coeffs_q.var(dim=0).mean().item()  # avg over spatial, prototypes
+        
+        # Variance of residual norm = variance perpendicular to prototypes
+        residual_norms = residual_q.norm(dim=-1)  # (B, H*W, N)
+        var_perpendicular = residual_norms.var(dim=0).mean().item()
+        
+        diagnostics['var_parallel'] = var_parallel
+        diagnostics['var_perpendicular'] = var_perpendicular
+        diagnostics['var_ratio'] = var_parallel / max(var_perpendicular, 1e-8)
+        
+        # === 4. Mean projection magnitude (how aligned features are with prototypes) ===
+        diagnostics['proj_coeff_mean'] = proj_coeffs_q.abs().mean().item()
+        diagnostics['proj_coeff_std'] = proj_coeffs_q.std().item()
+
+        return diagnostics
+
+    def forward(self, glo_feats, glo_feats_k, spatial_feats, spatial_feats_k, labels=None):
+        """
+        Compute PORL loss on spatial features.
+        
         Architecture:
-        - Online path: imgs → encoder → noise_mask_1 → projector → predictor → q_grid
-        - Target path: imgs → encoder → noise_mask_2 → momentum_projector → k_grid (NO predictor!)
+            Online: spatial_feats → predictor → project_out → residuals
+            Target: spatial_feats_k → project_out → residuals (no predictor)
+            Loss: MSE(online_residuals, target_residuals)
 
-        Key design choices:
-        1. Both paths use the SAME initial image (encoder runs once)
-        2. Two augmented views are created spatially via noise masks BEFORE projection
-        3. Difference comes from momentum parameters (EMA updated)
-        4. Predictor asymmetry prevents collapse
+        Args:
+            glo_feats: Online GAP features (B, C) — unused, kept for interface compat
+            glo_feats_k: Target GAP features (B, C) — unused
+            spatial_feats: Online dense features (B, C, H, W)
+            spatial_feats_k: Target dense features (B, C, H, W)
+            labels: Class labels (optional, not used)
+
+        Returns:
+            total_loss: scalar loss
+            diagnostics: dict with PORL monitoring metrics
         """
-        # === Extract features from encoder (Once) ===
-        feats_t = self.net_t(imgs)  
+        # ==========================================
+        # 1. ONLINE PATH: predictor → PORL
+        # ==========================================
+        predicted = self.predictor(spatial_feats)  # (B, C, H, W) — asymmetry
+        residual_q, proj_coeffs_q = self.project_out_prototypes(predicted)  # (B, H*W, N, C)
 
-        # === Create 2 augmented views from features ===
-        feats_v1 = []
-        feats_v2 = []
-        if self.training and torch.rand(1).item() > 0.5:
-            for f in feats_t:
-                B, C, H, W = f.shape
-
-                # Generate noise and mask for View 1
-                mask1 = torch.empty((B, 1, H, W), device=imgs.device, dtype=torch.float32).bernoulli_(1 - self.mask_ratio)
-                feats_v1.append(f * mask1)
-                
-                # Generate noise and mask for View 2
-                mask2 = torch.empty((B, 1, H, W), device=imgs.device, dtype=torch.float32).bernoulli_(1 - self.mask_ratio)
-                feats_v2.append(f * mask2)
-        else:
-            feats_v1 = list(feats_t)
-            feats_v2 = list(feats_t)
-
-        # === Online path: projector ===
-        feats_t_proj = self.proj_layer(feats_v1)
-
-        # === Target path: Augmented image through momentum network ===
+        # ==========================================
+        # 2. TARGET PATH: PORL only (no predictor)
+        # ==========================================
         with torch.no_grad():
-            feats_t_k_grid = self.proj_layer_momentum(feats_v2)  # Momentum projector (NO predictor!)
-            feats_t_k = [f.detach() for f in feats_t]  # ZERO-COPY detach target backbone features
+            residual_k, proj_coeffs_k = self.project_out_prototypes(spatial_feats_k)
 
-        # === Feature fusion and decoding ===
-        # Use projected features for reconstruction
-        mid = self.mff_oce(feats_t_proj)
-        mid_k = self.mff_oce(feats_t_k_grid)
-        feats_s = self.net_s(mid)
+        # ==========================================
+        # 3. PORL LOSS: MSE on orthogonal residuals
+        # ==========================================
+        # Per-prototype loss: MSE averaged over spatial and channels
+        # residual shape: (B, H*W, N, C)
+        per_proto_loss = F.mse_loss(
+            residual_q, residual_k, reduction='none'
+        ).mean(dim=(1, 3))  # (B, N) — per sample, per prototype
+        
+        loss = per_proto_loss.mean()
 
-        # === Global features for SCL ===
-        glo_feats = F.adaptive_avg_pool2d(mid, 1).squeeze()
-        glo_feats_k = F.adaptive_avg_pool2d(mid_k, 1).squeeze()
+        # ==========================================
+        # 4. DIAGNOSTICS (no grad)
+        # ==========================================
+        with torch.no_grad():
+            # Get normalized features for diagnostics
+            B, C, H, W = predicted.shape
+            features_norm_q = F.normalize(
+                predicted.view(B, C, -1).transpose(1, 2), dim=-1, p=2
+            )
+            
+            diagnostics = self.compute_diagnostics(
+                per_proto_loss.detach(),
+                residual_q.detach(),
+                residual_k.detach(),
+                proj_coeffs_q.detach(),
+                features_norm_q.detach()
+            )
 
-        # Return features WITH gradient for losses (DO NOT detach feats_t!)
-        # feats_t: Online backbone features (has gradient) - for cos loss
-        # feats_s: Decoder output (has gradient) - for cos loss
-        return feats_t, feats_s, glo_feats, glo_feats_k, mid, mid_k
-
-    def forward(self, imgs, aug_imgs=None):
-        """Main forward pass"""
-        if self.training and aug_imgs is not None:
-            return self.train_forward(imgs, aug_imgs)
-
-        # === Inference mode ===
-        feats_t = self.net_t(imgs)
-        feats_t_detached = [f.detach() for f in feats_t]  # Detach for inference
-        feats = self.proj_layer(feats_t_detached)
-        mid = self.mff_oce(feats)
-        feats_s = self.net_s(mid)
-        return feats_t_detached, feats_s, None, None, mid, None
-
-
-# ============================================================================
-# Model registration
-# ============================================================================
-
-@MODEL.register_module
-def rd_lgc_byol(pretrained=False, **kwargs):
-    """Create RDLGC model with BYOL-style architecture"""
-    model = RDLGC_BYOL(**kwargs)
-    return model
-
-
-# ============================================================================
-# Test
-# ============================================================================
-
-if __name__ == '__main__':
-    from argparse import Namespace as _Namespace
-    
-    # Test configuration
-    bs = 2
-    reso = 256
-    x = torch.randn(bs, 3, reso, reso).cuda()
-    x_aug = torch.randn(bs, 3, reso, reso).cuda()
-
-    model_t = _Namespace()
-    model_t.name = 'timm_wide_resnet50_2'
-    model_t.kwargs = dict(
-        pretrained=False,
-        checkpoint_path='',
-        strict=False, 
-        features_only=True, 
-        out_indices=[1, 2, 3]
-    )
-    
-    model_s = _Namespace()
-    model_s.name = 'de_wide_resnet50_2'
-    model_s.kwargs = dict(
-        pretrained=False,
-        checkpoint_path='',
-        strict=False
-    )
-
-    net = RDLGC_BYOL(model_t, model_s, momentum_schedule='cosine').cuda()
-    net.train()
-    
-    # Test forward
-    outputs = net(x, x_aug)
-    print(f"Number of outputs: {len(outputs)}")
-    print(f"feats_t_q shapes: {[f.shape for f in outputs[0]]}")
-    print(f"feats_s shapes: {[f.shape for f in outputs[1]]}")
-    print(f"q_grid shapes: {[f.shape for f in outputs[3]]}")
-    print(f"k_grid shapes: {[f.shape for f in outputs[4]]}")
-    
-    # Test momentum update
-    net.update_momentum_encoder()
-    print(f"Current momentum: {net.get_current_momentum()}")
-    
-    print("\n✅ RDLGC_BYOL test passed!")
+        return loss * self.lam * self.lam_spatial, diagnostics

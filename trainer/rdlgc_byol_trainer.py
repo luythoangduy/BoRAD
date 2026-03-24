@@ -300,20 +300,26 @@ class RDLGCBYOLTrainer(BaseTrainer):
             log_dict['grad/proj_layer_grad_norm'] = grad_proj_norm
             log_dict['grad/mff_oce_grad_norm'] = grad_mff_norm
 
-            # === Prototype diagnostics ===
+            # === PORL Diagnostics ===
             if proto_diagnostics is not None:
+                # Prototype diversity
                 log_dict['proto/cosine_sim_mean'] = proto_diagnostics['cosine_sim_mean']
                 log_dict['proto/cosine_sim_max'] = proto_diagnostics['cosine_sim_max']
                 log_dict['proto/cosine_sim_min'] = proto_diagnostics['cosine_sim_min']
-                log_dict['proto/case_opposite_ratio'] = proto_diagnostics['case_opposite_ratio']
-                log_dict['proto/case_same_ratio'] = proto_diagnostics['case_same_ratio']
-                log_dict['proto/loss_case_opposite'] = proto_diagnostics['loss_case_opposite']
-                log_dict['proto/loss_case_same'] = proto_diagnostics['loss_case_same']
-                log_dict['proto/n_pairs_opposite'] = proto_diagnostics['n_pairs_opposite']
-                log_dict['proto/n_pairs_same'] = proto_diagnostics['n_pairs_same']
+                # PORL loss details
+                log_dict['porl/loss'] = proto_diagnostics['loss_porl']
+                log_dict['porl/per_proto_loss_std'] = proto_diagnostics['per_proto_loss_std']
+                log_dict['porl/per_proto_loss_min'] = proto_diagnostics['per_proto_loss_min']
+                log_dict['porl/per_proto_loss_max'] = proto_diagnostics['per_proto_loss_max']
+                # Variance channeling (KEY hypothesis metrics)
+                log_dict['porl/var_parallel'] = proto_diagnostics['var_parallel']
+                log_dict['porl/var_perpendicular'] = proto_diagnostics['var_perpendicular']
+                log_dict['porl/var_ratio'] = proto_diagnostics['var_ratio']
+                # Projection coefficient stats
+                log_dict['porl/proj_coeff_mean'] = proto_diagnostics['proj_coeff_mean']
+                log_dict['porl/proj_coeff_std'] = proto_diagnostics['proj_coeff_std']
 
             # === Feature Variance Logging (to detect collapse) ===
-            # Global Average Pooling then Variance across batch
             with torch.no_grad():
                 var_enc = torch.stack([F.adaptive_avg_pool2d(f, 1).view(f.size(0), -1).var(dim=0).mean() for f in self.feats_t]).mean().item()
                 var_dec = torch.stack([F.adaptive_avg_pool2d(f, 1).view(f.size(0), -1).var(dim=0).mean() for f in self.feats_s]).mean().item()
@@ -335,13 +341,12 @@ class RDLGCBYOLTrainer(BaseTrainer):
             log_msg(self.logger, f"[Grad] proj_layer: {grad_proj_norm:.4f}, mff_oce: {grad_mff_norm:.4f}")
             if proto_diagnostics is not None:
                 log_msg(self.logger, 
-                    f"[Proto] cos_sim_mean: {proto_diagnostics['cosine_sim_mean']:.4f}, "
-                    f"cos_sim_max: {proto_diagnostics['cosine_sim_max']:.4f} | "
-                    f"case_opp: {proto_diagnostics['case_opposite_ratio']:.2%} "
-                    f"(loss={proto_diagnostics['loss_case_opposite']:.4f}), "
-                    f"case_same: {proto_diagnostics['case_same_ratio']:.2%} "
-                    f"(loss={proto_diagnostics['loss_case_same']:.4f}) | "
-                    f"dot_range: [{proto_diagnostics['dot_sign_min']:.4f}, {proto_diagnostics['dot_sign_max']:.4f}]"
+                    f"[PORL] loss={proto_diagnostics['loss_porl']:.4f} | "
+                    f"proto_cos_sim: {proto_diagnostics['cosine_sim_mean']:.4f} | "
+                    f"var_parallel: {proto_diagnostics['var_parallel']:.6f}, "
+                    f"var_perp: {proto_diagnostics['var_perpendicular']:.6f}, "
+                    f"ratio: {proto_diagnostics['var_ratio']:.2f} | "
+                    f"proj_coeff: {proto_diagnostics['proj_coeff_mean']:.4f}±{proto_diagnostics['proj_coeff_std']:.4f}"
                 )
 
 
