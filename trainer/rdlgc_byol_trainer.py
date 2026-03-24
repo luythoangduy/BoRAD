@@ -148,7 +148,7 @@ class RDLGCBYOLTrainer(BaseTrainer):
 
     def forward(self):
         """Forward pass"""
-        outputs = self.net(self.imgs, self.aug_imgs)
+        outputs = self.net(self.imgs)
         (self.feats_t, self.feats_s, self.glb_feats, self.glb_feats_k, self.mid, self.mid_k) = outputs
 
 
