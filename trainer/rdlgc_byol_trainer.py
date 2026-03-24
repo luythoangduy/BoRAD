@@ -70,24 +70,22 @@ class RDLGCBYOLTrainer(BaseTrainer):
         net_module = self.net.module if hasattr(self.net, 'module') else self.net
 
         # === Setup optimizers ===
-        self.optim.proj_opt = get_optim(cfg.optim.proj_opt.kwargs, net_module.predictor, lr=cfg.optim.lr)
-
-        # Temporarily remove predictor for distill_opt (avoid duplicate params)
-        predictor = net_module.predictor
-        net_module.predictor = None
-        self.optim.distill_opt = get_optim(cfg.optim.distill_opt.kwargs, self.net, lr=cfg.optim.lr)
-        net_module.predictor = predictor
-
-        # === Proto loss optimizer: prototypes + linear_merge + predictor ===
+        param_groups = [
+            {'params': net_module.proj_layer.parameters()},
+            {'params': net_module.mff_oce.parameters()},
+            {'params': net_module.net_s.parameters()},
+        ]
+        if hasattr(net_module, 'predictor') and net_module.predictor is not None:
+            param_groups.append({'params': net_module.predictor.parameters()})
+            
+        self.optim.distill_opt = torch.optim.Adam(param_groups, lr=cfg.optim.lr, betas=(0.8, 0.999))
+        self.optim.proj_opt = self.optim.distill_opt # For compatibility if needed elsewhere
+        
+        # === Proto loss optimizer ===
         if 'proto' in self.loss_terms:
             proto_module = self.loss_terms['proto']
-            self.optim.proto_opt = torch.optim.Adam(
-                proto_module.parameters(), lr=cfg.optim.lr, betas=(0.5, 0.999)
-            )
-            proto_module.train()  # IMPORTANT: get_loss_terms sets .eval(), but BN needs .train()
-            if self.master:
-                n_params = sum(p.numel() for p in proto_module.parameters() if p.requires_grad)
-                log_msg(self.logger, f"[Proto] Added {n_params} params to proto_opt")
+            self.optim.proto_opt = torch.optim.Adam(proto_module.parameters(), lr=cfg.optim.lr, betas=(0.5, 0.999))
+            proto_module.train()
         else:
             self.optim.proto_opt = None
 
@@ -152,29 +150,7 @@ class RDLGCBYOLTrainer(BaseTrainer):
         """Forward pass"""
         outputs = self.net(self.imgs, self.aug_imgs)
         (self.feats_t, self.feats_s, self.glb_feats, self.glb_feats_k, self.mid, self.mid_k) = outputs
-    def backward_term(self, loss_term, optim):
-        """Backward pass with gradient clipping"""
-        optim.proj_opt.zero_grad()
-        optim.distill_opt.zero_grad()
-        if optim.proto_opt is not None:
-            optim.proto_opt.zero_grad()
-        
-        if self.loss_scaler:
-            self.loss_scaler(
-                loss_term, optim, 
-                clip_grad=self.cfg.loss.clip_grad, 
-                parameters=self.net.parameters(),
-                create_graph=self.cfg.loss.create_graph
-            )
-        else:
-            loss_term.backward(retain_graph=self.cfg.loss.retain_graph)
-            if self.cfg.loss.clip_grad is not None:
-                dispatch_clip_grad(self.net.parameters(), value=self.cfg.loss.clip_grad)
-            
-            optim.proj_opt.step()
-            optim.distill_opt.step()
-            if optim.proto_opt is not None:
-                optim.proto_opt.step()
+
 
 
     def optimize_parameters(self):
@@ -189,10 +165,6 @@ class RDLGCBYOLTrainer(BaseTrainer):
         with self.amp_autocast():
             self.forward()
             
-            # === Reconstruction loss (cosine similarity) — always required ===
-            loss_cos = self.loss_terms['cos'](self.feats_t, self.feats_s)
-            loss = loss_cos
-
             # === Prototype InfoNCE loss (optional) ===
             loss_glb = None
             proto_diagnostics = None
@@ -211,28 +183,17 @@ class RDLGCBYOLTrainer(BaseTrainer):
                     self.labels
                 )
                 loss = loss + loss_den
-
-        # === Backward pass (compute gradients) ===
-        self.optim.proj_opt.zero_grad()
-        self.optim.distill_opt.zero_grad()
         if self.optim.proto_opt is not None:
             self.optim.proto_opt.zero_grad()
 
         if self.loss_scaler:
-            # AMP path: loss_scaler handles backward + unscale + step
-            # We need to unscale manually to read true gradient norms
             self.loss_scaler(
                 loss, self.optim,
                 clip_grad=self.cfg.loss.clip_grad,
                 parameters=self.net.parameters(),
                 create_graph=self.cfg.loss.create_graph
             )
-            # Gradients are already stepped, read norms post-step (approximate)
-            net_module = self.net.module if hasattr(self.net, 'module') else self.net
-            grad_proj_norm = 0.0
-            grad_mff_norm = 0.0
         else:
-            # Non-AMP path
             loss.backward(retain_graph=self.cfg.loss.retain_graph)
             if self.cfg.loss.clip_grad is not None:
                 dispatch_clip_grad(self.net.parameters(), value=self.cfg.loss.clip_grad)
@@ -251,8 +212,6 @@ class RDLGCBYOLTrainer(BaseTrainer):
                     grad_mff_norm += p.grad.data.norm(2).item() ** 2
             grad_mff_norm = grad_mff_norm ** 0.5
 
-            # === Optimizer step ===
-            self.optim.proj_opt.step()
             self.optim.distill_opt.step()
             if self.optim.proto_opt is not None:
                 self.optim.proto_opt.step()
@@ -296,6 +255,8 @@ class RDLGCBYOLTrainer(BaseTrainer):
                 current_momentum = current_momentum.item()
             log_dict['train/momentum'] = current_momentum
 
+
+
             # === Gradient magnitude ===
             log_dict['grad/proj_layer_grad_norm'] = grad_proj_norm
             log_dict['grad/mff_oce_grad_norm'] = grad_mff_norm
@@ -311,8 +272,6 @@ class RDLGCBYOLTrainer(BaseTrainer):
                 log_dict['proto/loss_case_same'] = proto_diagnostics['loss_case_same']
                 log_dict['proto/n_pairs_opposite'] = proto_diagnostics['n_pairs_opposite']
                 log_dict['proto/n_pairs_same'] = proto_diagnostics['n_pairs_same']
-
-            # === Feature Variance Logging (to detect collapse) ===
             # Global Average Pooling then Variance across batch
             with torch.no_grad():
                 var_enc = torch.stack([F.adaptive_avg_pool2d(f, 1).view(f.size(0), -1).var(dim=0).mean() for f in self.feats_t]).mean().item()
