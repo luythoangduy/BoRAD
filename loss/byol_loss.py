@@ -377,6 +377,29 @@ class PrototypeBYOLLoss(nn.Module):
         with torch.no_grad():
             merged_k = self.query_prototypes(spatial_feats_k)
 
+        # --- Logging magnitude: Online vs Target (Spatial) ---
+        mag_q_spatial = torch.norm(predicted_spatial, p=2, dim=1)
+        mag_k_spatial = torch.norm(merged_k, p=2, dim=1)
+        
+        try:
+            import wandb
+            if wandb.run is not None:
+                wandb.log({
+                    "mag/spatial_online_min": mag_q_spatial.min().item(),
+                    "mag/spatial_online_max": mag_q_spatial.max().item(),
+                    "mag/spatial_online_mean": mag_q_spatial.mean().item(),
+                    "mag/spatial_target_min": mag_k_spatial.min().item(),
+                    "mag/spatial_target_max": mag_k_spatial.max().item(),
+                    "mag/spatial_target_mean": mag_k_spatial.mean().item(),
+                }, commit=False)
+        except:
+            pass
+
+        if torch.rand(1).item() < 0.05:
+            print(f"[Magnitude] Spatial Online - min:{mag_q_spatial.min():.4f} max:{mag_q_spatial.max():.4f} mean:{mag_q_spatial.mean():.4f}")
+            print(f"[Magnitude] Spatial Target - min:{mag_k_spatial.min():.4f} max:{mag_k_spatial.max():.4f} mean:{mag_k_spatial.mean():.4f}")
+        # -----------------------------------------------------
+
         # Loss computation
         predicted_spatial = F.normalize(predicted_spatial, dim=1, p=2)
         target_spatial = F.normalize(merged_k, dim=1, p=2)
@@ -397,6 +420,29 @@ class PrototypeBYOLLoss(nn.Module):
         # Online predictor
         predicted_global = self.global_predictor(shifted_q.reshape(B * N, -1))  # (B*N, C)
         predicted_global = predicted_global.reshape(B, N, -1)                   # (B, N, C)
+
+        # --- Logging magnitude: Online vs Target (Global) ---
+        mag_q_global = torch.norm(predicted_global, p=2, dim=2)
+        mag_k_global = torch.norm(shifted_k, p=2, dim=2)
+        
+        try:
+            import wandb
+            if wandb.run is not None:
+                wandb.log({
+                    "mag/global_online_min": mag_q_global.min().item(),
+                    "mag/global_online_max": mag_q_global.max().item(),
+                    "mag/global_online_mean": mag_q_global.mean().item(),
+                    "mag/global_target_min": mag_k_global.min().item(),
+                    "mag/global_target_max": mag_k_global.max().item(),
+                    "mag/global_target_mean": mag_k_global.mean().item(),
+                }, commit=False)
+        except:
+            pass
+
+        if torch.rand(1).item() < 0.05:
+            print(f"[Magnitude] Global Online - min:{mag_q_global.min():.4f} max:{mag_q_global.max():.4f} mean:{mag_q_global.mean():.4f}")
+            print(f"[Magnitude] Global Target - min:{mag_k_global.min():.4f} max:{mag_k_global.max():.4f} mean:{mag_k_global.mean():.4f}")
+        # ----------------------------------------------------
 
         # BYOL loss per prototype
         predicted_global = F.normalize(predicted_global, dim=2, p=2)
