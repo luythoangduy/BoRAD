@@ -425,6 +425,20 @@ class PrototypeBYOLLoss(nn.Module):
         mag_q_global = torch.norm(predicted_global, p=2, dim=2)
         mag_k_global = torch.norm(shifted_k, p=2, dim=2)
         
+        # --- Logging Prototype Similarity ---
+        global_protos = self.prototypes.mean(dim=0)  # (N, C)
+        n_protos = F.normalize(global_protos, p=2, dim=1)
+        sim_matrix = torch.matmul(n_protos, n_protos.T)  # (N, N)
+        mask_diag = ~torch.eye(N, dtype=torch.bool, device=n_protos.device)
+        off_diag_sim = sim_matrix[mask_diag]
+        
+        # --- Logging Direction Divergence (shifted & normalized vs original diff) ---
+        n_shifted_q = F.normalize(shifted_q, p=2, dim=2)
+        n_shifted_k = F.normalize(shifted_k, p=2, dim=2)
+        diff_n_shifted = n_shifted_q - n_shifted_k  # (B, N, C)
+        orig_diff = (glo_feats - glo_feats_k).unsqueeze(1)  # (B, 1, C)
+        dir_cos_sim = F.cosine_similarity(diff_n_shifted, orig_diff, dim=2)  # (B, N)
+        
         try:
             import wandb
             if wandb.run is not None:
@@ -435,6 +449,10 @@ class PrototypeBYOLLoss(nn.Module):
                     "mag/global_target_min": mag_k_global.min().item(),
                     "mag/global_target_max": mag_k_global.max().item(),
                     "mag/global_target_mean": mag_k_global.mean().item(),
+                    "proto/sim_mean": off_diag_sim.mean().item(),
+                    "proto/sim_max": off_diag_sim.max().item(),
+                    "proto/sim_min": off_diag_sim.min().item(),
+                    "dir/shift_norm_vs_orig_diff_cos": dir_cos_sim.mean().item(),
                 }, commit=False)
         except:
             pass
@@ -442,6 +460,8 @@ class PrototypeBYOLLoss(nn.Module):
         if torch.rand(1).item() < 0.05:
             print(f"[Magnitude] Global Online - min:{mag_q_global.min():.4f} max:{mag_q_global.max():.4f} mean:{mag_q_global.mean():.4f}")
             print(f"[Magnitude] Global Target - min:{mag_k_global.min():.4f} max:{mag_k_global.max():.4f} mean:{mag_k_global.mean():.4f}")
+            print(f"[Prototype] Global Sim - mean:{off_diag_sim.mean():.4f} max:{off_diag_sim.max():.4f}")
+            print(f"[Direction] Shift Norm vs Orig Diff CosSim - mean:{dir_cos_sim.mean():.4f}")
         # ----------------------------------------------------
 
         # BYOL loss per prototype
